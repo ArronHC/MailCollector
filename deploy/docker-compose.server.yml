@@ -8,41 +8,10 @@ services:
       dockerfile: deploy/Dockerfile
     image: mail-collector:${MAIL_COLLECTOR_IMAGE_TAG:-local}
     restart: unless-stopped
+    network_mode: host
     env_file:
       - "${MAIL_COLLECTOR_STATE_DIR:?MAIL_COLLECTOR_STATE_DIR is required}/server.env"
     volumes:
       - type: bind
         source: "${MAIL_COLLECTOR_STATE_DIR:?MAIL_COLLECTOR_STATE_DIR is required}/data"
         target: /data
-    networks:
-      - mail-collector-internal
-
-  caddy:
-    container_name: mail-collector-caddy
-    image: caddy:2.10-alpine
-    restart: unless-stopped
-    depends_on:
-      mail-collector:
-        condition: service_healthy
-    environment:
-      MAIL_COLLECTOR_DOMAIN: "${MAIL_COLLECTOR_DOMAIN:?MAIL_COLLECTOR_DOMAIN is required}"
-    ports:
-      - "${MAIL_COLLECTOR_HTTP_PORT:-80}:80"
-      - "${MAIL_COLLECTOR_HTTPS_PORT:-443}:443"
-    volumes:
-      - type: bind
-        source: ./Caddyfile
-        target: /etc/caddy/Caddyfile
-        read_only: true
-      - type: bind
-        source: "${MAIL_COLLECTOR_STATE_DIR:?MAIL_COLLECTOR_STATE_DIR is required}/caddy-data"
-        target: /data
-      - type: bind
-        source: "${MAIL_COLLECTOR_STATE_DIR:?MAIL_COLLECTOR_STATE_DIR is required}/caddy-config"
-        target: /config
-    networks:
-      - mail-collector-internal
-
-networks:
-  mail-collector-internal:
-    driver: bridge

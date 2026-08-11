@@ -1,4 +1,0 @@
-{$MAIL_COLLECTOR_DOMAIN} {
-    encode zstd gzip
-    reverse_proxy mail-collector-app:3000
-}

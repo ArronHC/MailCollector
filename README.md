@@ -106,10 +106,10 @@ npm run dist:win
 
 1. 一台具有公网 IP 的 Linux 服务器，建议至少 1 核 CPU、1 GB 内存和 10 GB 可用磁盘。
 2. 一个域名，例如 `mail.example.com`，其 A/AAAA 记录已经指向服务器。
-3. 云防火墙和系统防火墙开放 TCP 80、443；Node 服务端口不会直接暴露。
+3. 服务器上已有 Nginx、Caddy 或面板反向代理，并由它负责域名证书和 TCP 80/443。
 4. 使用 root，或者拥有 `sudo` 权限的账户。
 
-部署脚本会安装或检查 Docker 和 Docker Compose、生成所有随机密钥、下载最新代码、构建后端镜像，并通过 Caddy 自动申请和续订 HTTPS 证书。服务器已有 Docker CE 时，脚本不会用发行版的 `docker.io` 包替换它。需要 Docker Compose v2 或 `docker-compose` 1.25.0 以上版本；脚本会尝试从系统软件源安装可用版本，否则给出明确错误。
+部署脚本会安装或检查 Docker 和 Docker Compose、生成所有随机密钥、下载最新代码并构建后端镜像。服务通过 Linux host network 直接绑定宿主机 `127.0.0.1:8080`，不会直接暴露到公网；现有反向代理负责 HTTPS。服务器已有 Docker CE 时，脚本不会用发行版的 `docker.io` 包替换它。需要 Docker Compose v2 或 `docker-compose` 1.25.0 以上版本；脚本会尝试从系统软件源安装可用版本，否则给出明确错误。
 
 ### 一键交互安装
 
@@ -124,6 +124,7 @@ curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/Arr
 - 桌面客户端需要填写的 API Key。
 - 首次创建管理员账户使用的邀请码。
 - 配置文件和数据目录位置。
+- 反向代理目标 `http://127.0.0.1:8080`。
 
 请立即把 API Key、邀请码和 `ENCRYPTION_KEY` 的配置文件备份到安全位置。
 
@@ -143,13 +144,14 @@ curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/Arr
 sudo env \
   MAIL_COLLECTOR_DOMAIN=mail.example.com \
   MAIL_COLLECTOR_INSTALL_DIR=/opt/mail-collector \
+  MAIL_COLLECTOR_PROXY_PORT=8080 \
   MAIL_COLLECTOR_API_KEY='replace_with_a_long_random_secret' \
   MAIL_COLLECTOR_ENCRYPTION_KEY='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
   MAIL_COLLECTOR_INVITE_CODE='replace_with_private_invite_code' \
   bash /tmp/install-mail-collector.sh
 ```
 
-自定义 API Key 和邀请码只能包含英文字母、数字、点、下划线、波浪线和连字符，分别至少需要 24 和 12 个字符。`ENCRYPTION_KEY` 必须是 64 位十六进制字符串。需要固定程序版本时，可以额外设置 `MAIL_COLLECTOR_REF` 为包含部署文件的 release tag；后续升级会保留该值。
+自定义 API Key 和邀请码只能包含英文字母、数字、点、下划线、波浪线和连字符，分别至少需要 24 和 12 个字符。`ENCRYPTION_KEY` 必须是 64 位十六进制字符串。`MAIL_COLLECTOR_PROXY_PORT` 是安装器输入，最终会保存为 `server.env` 中唯一的监听配置 `PORT`。需要固定程序版本时，可以额外设置 `MAIL_COLLECTOR_REF` 为包含部署文件的 release tag；后续升级会保留该值。
 
 ### 部署内容
 
@@ -162,27 +164,56 @@ sudo env \
 └── state/
     ├── server.env          密钥和服务器配置，权限 600
     ├── server.env.bak      更新前的配置备份
-    ├── data/               SQLite 邮件数据库
-    ├── caddy-data/         HTTPS 证书和 Caddy 状态
-    └── caddy-config/
+    └── data/               SQLite 邮件数据库
 ```
 
-Docker Compose 启动两个容器：
+Docker Compose 启动一个容器：
 
 - `mail-collector-app`：Node 邮件同步、API、SQLite queue 和 IMAP IDLE。
-- `mail-collector-caddy`：唯一公开入口，监听 80/443 并反向代理到应用容器。
 
-应用容器不映射宿主机端口，不能绕过 Caddy 直接访问。默认服务器配置等价于：
+应用容器使用 Linux host network，Node 进程只监听宿主机回环地址的单个端口：
+
+```text
+127.0.0.1:8080
+```
+
+默认服务器配置等价于：
 
 ```env
-HOST=0.0.0.0
+HOST=127.0.0.1
+PORT=8080
 DATABASE_PATH=/data/mail-collector.db
 ALLOW_REMOTE_CLIENTS=true
-TRUSTED_PROXY=uniquelocal
+TRUSTED_PROXY=loopback
 REQUIRE_HTTPS=true
 ```
 
-`TRUSTED_PROXY=uniquelocal` 会信任私有地址来源的转发头，不会验证来源一定是 Caddy。默认 Compose 不公开应用容器的 3000 端口；不要映射该端口，也不要把不可信容器加入同一网络。
+`TRUSTED_PROXY=loopback` 只信任同机反向代理的转发头。不要把 `HOST` 改为 `0.0.0.0`，否则客户端可能绕过 HTTPS 入口。
+
+### 配置反向代理
+
+Nginx 站点的 HTTPS `server` 块中增加：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Caddy 使用：
+
+```caddyfile
+mail.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+在宝塔、1Panel 等面板中，将反向代理目标填写为 `http://127.0.0.1:8080`，开启 HTTPS，并确保传递原始 `Host` 和 `X-Forwarded-Proto: https`。如果反向代理本身运行在 Docker 容器中，它无法直接访问宿主机的 `127.0.0.1`；应改为宿主机上的 Nginx/Caddy，或单独设计受防火墙保护的 Docker 网络入口。
 
 ### 连接桌面客户端
 
@@ -212,7 +243,7 @@ sudo docker logs -f --tail=200 mail-collector-app
 
 ### 升级服务器
 
-再次执行同一个安装命令即可。脚本会下载最新代码并重新构建容器，同时保留 `state/` 中的数据库、密钥和 Caddy 证书：
+已经使用外部反向代理的部署，再次执行同一个安装命令即可。脚本会下载最新代码并重新构建容器，同时保留 `state/` 中的数据库和密钥：
 
 ```bash
 curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/ArronHC/MailCollector/main/deploy/install-server.sh \
@@ -221,9 +252,26 @@ curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/Arr
 
 脚本管理的域名、密钥、版本和同步调优参数会在升级时保留，并额外生成 `server.env.bak`。脚本会重新生成 `server.env`；如果手工增加了其他变量，升级后需要从备份中重新合并。
 
+#### 从早期内置 Caddy 迁移
+
+旧版 `mail-collector-caddy` 占用 80/443，不能与宿主机反向代理同时运行。安装器检测到旧容器时会默认停止并要求显式确认。迁移步骤：
+
+1. 先写好宿主机 Nginx/Caddy 配置，但旧 Caddy 仍运行时不要启动或重载新代理。
+2. 执行迁移安装。脚本会检查端口占用、启动 `127.0.0.1:8080` 应用入口并等待健康检查通过，然后才移除旧 Caddy 容器：
+
+```bash
+curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/ArronHC/MailCollector/main/deploy/install-server.sh
+sudo env MAIL_COLLECTOR_MIGRATE_EXTERNAL_PROXY=true bash /tmp/install-mail-collector.sh
+```
+
+3. 安装完成后立即执行 `sudo systemctl restart nginx` 或 `sudo systemctl restart caddy`，再访问 HTTPS 域名验证。
+4. 确认正常后，可以删除未再使用的 `/opt/mail-collector/state/caddy-data` 和 `caddy-config`。
+
+入口切换期间会有短暂中断。不要在尚未准备好外部反向代理时设置迁移确认变量。
+
 ### 备份和恢复
 
-为了获得一致的 SQLite 和 Caddy 状态备份，短暂停止两个容器，再打包整个 `state` 目录：
+为了获得一致的 SQLite 备份，短暂停止应用容器，再打包整个 `state` 目录：
 
 ```bash
 (
@@ -239,7 +287,7 @@ curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/Arr
 )
 ```
 
-恢复时停止两个容器，用备份中的 `state/` 替换当前目录，执行 `sudo chmod 600 /opt/mail-collector/state/server.env` 和 `sudo chown -R 1000:1000 /opt/mail-collector/state/data`，再重新启动 Compose。必须同时恢复 `server.env` 和数据库，否则已加密的邮箱凭据可能无法解密。
+恢复时停止应用容器，用备份中的 `state/` 替换当前目录，执行 `sudo chmod 600 /opt/mail-collector/state/server.env` 和 `sudo chown -R 1000:1000 /opt/mail-collector/state/data`，然后重新下载安装脚本，并使用 `sudo env MAIL_COLLECTOR_PROXY_PORT=8080 bash /tmp/install-mail-collector.sh` 运行，让它把旧备份中的 `HOST`、`PORT` 和 `TRUSTED_PROXY` 转换为当前安全配置。不要直接用新 Compose 文件启动旧版 `server.env`。必须同时恢复 `server.env` 和数据库，否则已加密的邮箱凭据可能无法解密。
 
 ### 停止或卸载
 
@@ -262,14 +310,14 @@ sudo /opt/mail-collector/compose.sh down --remove-orphans
 sudo rm -rf /opt/mail-collector
 ```
 
-完全删除不可恢复，执行前必须确认已有备份。
+同时从 Nginx、Caddy 或服务器面板中删除对应域名的反向代理站点和证书配置，避免留下持续返回 502 的公开入口。完全删除不可恢复，执行前必须确认已有备份。
 
 ### 手工部署和高级配置
 
 不使用安装脚本时，可以复制示例环境文件并直接运行 Compose。以下命令要求 Docker Compose v2：
 
 ```bash
-sudo install -d -m 700 /srv/mail-collector /srv/mail-collector/data /srv/mail-collector/caddy-data /srv/mail-collector/caddy-config
+sudo install -d -m 700 /srv/mail-collector /srv/mail-collector/data
 sudo install -m 600 deploy/server.env.example /srv/mail-collector/server.env
 sudo chown -R 1000:1000 /srv/mail-collector/data
 sudo editor /srv/mail-collector/server.env
@@ -292,7 +340,7 @@ ALLOWED_REMOTE_ORIGINS=https://mail-client.example.com
 
 - 非 localhost/127.0.0.1 地址必须使用 HTTPS。
 - `ALLOW_REMOTE_CLIENTS` 默认关闭，不会改变现有本机部署的跨站安全边界。
-- `TRUSTED_PROXY` 必须填写实际反向代理 IP/CIDR 或受控的 Express 预设，不能信任任意来源的转发头；Node 端口还应通过防火墙限制为仅代理可访问。
+- `TRUSTED_PROXY` 必须填写实际反向代理 IP/CIDR 或受控的 Express 预设，不能信任任意来源的转发头；默认 `loopback` 与同机 Nginx/Caddy 配合使用。
 - 桌面版通过 Tauri 应用数据目录保存后端配置；只有选择“记住 API Key”时才会一并持久化密钥。浏览器版使用当前站点的 Web Storage。只应在可信个人设备上记住密钥。
 - 当前不会自动把已有本机数据库上传到服务器。首次切换时应在服务器模式下重新添加邮箱账号，或手工迁移服务器数据库。
 - 桌面应用目前仍会启动本地 sidecar，但远端模式下前端邮件请求不会使用本地数据库。

@@ -36,5 +36,5 @@ USER node
 
 EXPOSE 3000
 VOLUME ["/data"]
-HEALTHCHECK --interval=20s --timeout=5s --start-period=20s --retries=5 CMD ["node", "-e", "const net=require('node:net');const s=net.connect(3000,'127.0.0.1',()=>{s.end();process.exit(0)});s.setTimeout(3000,()=>process.exit(1));s.on('error',()=>process.exit(1))"]
+HEALTHCHECK --interval=20s --timeout=5s --start-period=20s --retries=5 CMD ["node", "-e", "const net=require('node:net');const port=Number(process.env.PORT||3000);const s=net.connect(port,'127.0.0.1',()=>{s.end();process.exit(0)});s.setTimeout(3000,()=>process.exit(1));s.on('error',()=>process.exit(1))"]
 CMD ["node", "dist/server.js"]

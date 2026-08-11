@@ -54,6 +54,14 @@ if ! docker info >/dev/null 2>&1; then
 fi
 docker info >/dev/null 2>&1 || fail "Docker daemon is not available"
 
+LEGACY_CADDY=false
+if docker container inspect mail-collector-caddy >/dev/null 2>&1; then
+  LEGACY_CADDY=true
+  if [[ "${MAIL_COLLECTOR_MIGRATE_EXTERNAL_PROXY:-false}" != "true" ]]; then
+    fail "legacy Caddy deployment detected; prepare the host reverse proxy, then rerun with MAIL_COLLECTOR_MIGRATE_EXTERNAL_PROXY=true"
+  fi
+fi
+
 if docker compose version >/dev/null 2>&1; then
   COMPOSE=(docker compose)
 elif compose_v1_supported; then
@@ -66,7 +74,7 @@ if [[ ! "${INSTALL_DIR}" =~ ^/[a-zA-Z0-9._/-]+$ ]]; then
   fail "MAIL_COLLECTOR_INSTALL_DIR must be an absolute path using letters, numbers, dots, underscores, hyphens, and slashes"
 fi
 
-mkdir -p "${INSTALL_DIR}" "${STATE_DIR}/data" "${STATE_DIR}/caddy-data" "${STATE_DIR}/caddy-config"
+mkdir -p "${INSTALL_DIR}" "${STATE_DIR}/data"
 chmod 700 "${STATE_DIR}"
 chown -R 1000:1000 "${STATE_DIR}/data"
 
@@ -85,6 +93,11 @@ setting() {
   existing_value="$(read_existing "${name}")"
   printf '%s' "${environment_value:-${existing_value:-${fallback}}}"
 }
+
+LEGACY_ENV=false
+if [[ -n "$(read_existing MAIL_COLLECTOR_HTTP_PORT)" || -n "$(read_existing MAIL_COLLECTOR_HTTPS_PORT)" ]]; then
+  LEGACY_ENV=true
+fi
 
 valid_domain() {
   local domain="$1"
@@ -129,16 +142,33 @@ if [[ -f "${ENV_FILE}" ]]; then
   READ_ENV_FILE="${ENV_FILE}.bak"
 fi
 
+if [[ -n "${MAIL_COLLECTOR_PROXY_PORT:-}" ]]; then
+  PROXY_PORT="${MAIL_COLLECTOR_PROXY_PORT}"
+elif [[ "${LEGACY_CADDY}" == "true" || "${LEGACY_ENV}" == "true" ]]; then
+  PROXY_PORT=8080
+else
+  PROXY_PORT="$(setting PORT 8080)"
+fi
+if [[ ! "${PROXY_PORT}" =~ ^[0-9]+$ ]] || (( 10#${PROXY_PORT} < 1 || 10#${PROXY_PORT} > 65535 )); then
+  fail "MAIL_COLLECTOR_PROXY_PORT must be an integer between 1 and 65535"
+fi
+
+CURRENT_APP_NETWORK="$(docker inspect --format '{{.HostConfig.NetworkMode}}' mail-collector-app 2>/dev/null || true)"
+CURRENT_APP_PORT="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' mail-collector-app 2>/dev/null | sed -n 's/^PORT=//p' | tail -n 1 || true)"
+if [[ "${CURRENT_APP_NETWORK}" != "host" || "${CURRENT_APP_PORT}" != "${PROXY_PORT}" ]]; then
+  if timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/${PROXY_PORT}" 2>/dev/null; then
+    fail "127.0.0.1:${PROXY_PORT} is already in use; choose another MAIL_COLLECTOR_PROXY_PORT or stop the conflicting service"
+  fi
+fi
+
 cat >"${ENV_FILE}" <<EOF
 MAIL_COLLECTOR_DOMAIN=${DOMAIN}
 MAIL_COLLECTOR_STATE_DIR=${STATE_DIR}
 MAIL_COLLECTOR_REF=${SOURCE_REF}
 MAIL_COLLECTOR_IMAGE_TAG=${SOURCE_REF//\//-}
-MAIL_COLLECTOR_HTTP_PORT=$(setting MAIL_COLLECTOR_HTTP_PORT 80)
-MAIL_COLLECTOR_HTTPS_PORT=$(setting MAIL_COLLECTOR_HTTPS_PORT 443)
 
-HOST=0.0.0.0
-PORT=3000
+HOST=127.0.0.1
+PORT=${PROXY_PORT}
 DATABASE_PATH=/data/mail-collector.db
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
 API_KEY=${API_KEY}
@@ -146,7 +176,7 @@ REGISTRATION_INVITE_CODE=${INVITE_CODE}
 
 ALLOW_REMOTE_CLIENTS=true
 ALLOWED_REMOTE_ORIGINS=$(setting ALLOWED_REMOTE_ORIGINS '')
-TRUSTED_PROXY=uniquelocal
+TRUSTED_PROXY=loopback
 REQUIRE_HTTPS=true
 ALLOW_PRIVATE_MAIL_HOSTS=$(setting ALLOW_PRIVATE_MAIL_HOSTS false)
 
@@ -189,9 +219,27 @@ rm -rf "${SOURCE_DIR}"
 mv "${SOURCE_DIR}.new" "${SOURCE_DIR}"
 
 printf 'Building and starting Mail Collector...\n'
-"${COMPOSE[@]}" --project-name mail-collector --env-file "${ENV_FILE}" -f "${SOURCE_DIR}/deploy/docker-compose.server.yml" pull caddy
 "${COMPOSE[@]}" --project-name mail-collector --env-file "${ENV_FILE}" -f "${SOURCE_DIR}/deploy/docker-compose.server.yml" build --pull mail-collector
-"${COMPOSE[@]}" --project-name mail-collector --env-file "${ENV_FILE}" -f "${SOURCE_DIR}/deploy/docker-compose.server.yml" up -d --force-recreate --remove-orphans
+"${COMPOSE[@]}" --project-name mail-collector --env-file "${ENV_FILE}" -f "${SOURCE_DIR}/deploy/docker-compose.server.yml" up -d --force-recreate mail-collector
+
+HEALTH_STATUS=""
+for ((attempt = 0; attempt < 30; attempt += 1)); do
+  HEALTH_STATUS="$(docker inspect --format '{{.State.Health.Status}}' mail-collector-app 2>/dev/null || true)"
+  [[ "${HEALTH_STATUS}" == "healthy" ]] && break
+  sleep 2
+done
+if [[ "${HEALTH_STATUS}" != "healthy" ]]; then
+  docker logs --tail 100 mail-collector-app >&2 || true
+  if [[ "${LEGACY_CADDY}" == "true" ]]; then
+    fail "mail-collector-app did not become healthy; legacy Caddy was not removed, but its backend is unavailable. Fix the logged error and rerun the migration"
+  fi
+  fail "mail-collector-app did not become healthy; fix the logged error and rerun the installer"
+fi
+
+"${COMPOSE[@]}" --project-name mail-collector --env-file "${ENV_FILE}" -f "${SOURCE_DIR}/deploy/docker-compose.server.yml" up -d --remove-orphans
+if [[ "${LEGACY_CADDY}" == "true" ]]; then
+  docker network rm mail-collector_mail-collector-internal >/dev/null 2>&1 || true
+fi
 
 cat >"${INSTALL_DIR}/compose.sh" <<EOF
 #!/usr/bin/env bash
@@ -210,4 +258,8 @@ printf 'Registration invite code: %s\n' "${INVITE_CODE}"
 printf 'Configuration: %s\n' "${ENV_FILE}"
 printf 'Data directory: %s\n' "${STATE_DIR}/data"
 printf 'Management command: sudo %s/compose.sh\n' "${INSTALL_DIR}"
-printf '\nEnsure DNS points to this server and TCP ports 80/443 are open. Caddy will obtain the HTTPS certificate automatically.\n'
+printf 'Reverse proxy target: http://127.0.0.1:%s\n' "${PROXY_PORT}"
+printf '\nConfigure the host Nginx or Caddy server to proxy https://%s to this target and pass X-Forwarded-Proto. Do not expose port %s publicly.\n' "${DOMAIN}" "${PROXY_PORT}"
+if [[ "${LEGACY_CADDY}" == "true" ]]; then
+  printf 'Legacy Caddy was removed. Start or reload the prepared host reverse proxy now to restore the public HTTPS endpoint.\n'
+fi
