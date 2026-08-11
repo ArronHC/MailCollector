@@ -45,13 +45,22 @@ function boolean(name: string, fallback: boolean): boolean {
   throw new Error(`${name} must be true or false`);
 }
 
+function stringList(name: string): string[] {
+  return (process.env[name] ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+}
+
 export const config = {
   port: integer("PORT", 3000),
   host: process.env.HOST?.trim() || "127.0.0.1",
   databasePath: path.resolve(process.env.DATABASE_PATH ?? "./data/mail-collector.db"),
   encryptionKey: encryptionKey(),
   apiKey: requiredApiKey(),
+  serviceVersion: process.env.MAIL_COLLECTOR_VERSION?.trim() || "0.2.0",
   registrationInviteCode: requiredInviteCode(),
+  allowRemoteClients: boolean("ALLOW_REMOTE_CLIENTS", false),
+  allowedRemoteOrigins: stringList("ALLOWED_REMOTE_ORIGINS"),
+  trustedProxy: process.env.TRUSTED_PROXY?.trim() || "",
+  requireHttps: boolean("REQUIRE_HTTPS", false),
   allowPrivateMailHosts: boolean("ALLOW_PRIVATE_MAIL_HOSTS", false),
   syncIntervalMinutes: integer("SYNC_INTERVAL_MINUTES", 5),
   initialSyncLimit: integer("INITIAL_SYNC_LIMIT", 100),

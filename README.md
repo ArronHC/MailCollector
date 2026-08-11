@@ -93,6 +93,210 @@ npm run dist:win
 - `SYNC_INTERVAL_MINUTES` 是调度扫描周期；账号实际 reconciliation 周期由 active/normal/inactive 配置自适应决定。
 - Gmail 和 Microsoft 账号当前仍通过通用 IMAP Adapter 工作；数据库和 Provider 接口已预留独立 adapter/cursor/subscription 扩展点，但尚未接入 Gmail History API、Microsoft Graph、OAuth 或云端 webhook。
 
+## 单用户多设备
+
+桌面端支持两种后端模式：
+
+- 本机模式：继续连接桌面应用自动启动的本地 sidecar，数据保存在当前设备。
+- 自托管服务器：多台设备连接同一个 Mail Collector 服务，邮箱账号、邮件、同步 cursor 和用户操作都以服务器数据库为准。
+
+### 部署前准备
+
+一键脚本目前支持 Debian 和 Ubuntu。运行前需要：
+
+1. 一台具有公网 IP 的 Linux 服务器，建议至少 1 核 CPU、1 GB 内存和 10 GB 可用磁盘。
+2. 一个域名，例如 `mail.example.com`，其 A/AAAA 记录已经指向服务器。
+3. 云防火墙和系统防火墙开放 TCP 80、443；Node 服务端口不会直接暴露。
+4. 使用 root，或者拥有 `sudo` 权限的账户。
+
+部署脚本会安装或检查 Docker 和 Docker Compose、生成所有随机密钥、下载最新代码、构建后端镜像，并通过 Caddy 自动申请和续订 HTTPS 证书。服务器已有 Docker CE 时，脚本不会用发行版的 `docker.io` 包替换它。需要 Docker Compose v2 或 `docker-compose` 1.25.0 以上版本；脚本会尝试从系统软件源安装可用版本，否则给出明确错误。
+
+### 一键交互安装
+
+```bash
+curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/ArronHC/MailCollector/main/deploy/install-server.sh \
+  && sudo bash /tmp/install-mail-collector.sh
+```
+
+脚本会询问域名。完成后会输出：
+
+- 服务器 HTTPS 地址。
+- 桌面客户端需要填写的 API Key。
+- 首次创建管理员账户使用的邀请码。
+- 配置文件和数据目录位置。
+
+请立即把 API Key、邀请码和 `ENCRYPTION_KEY` 的配置文件备份到安全位置。
+
+### 无人值守安装
+
+至少提供域名：
+
+```bash
+curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/ArronHC/MailCollector/main/deploy/install-server.sh
+sudo env MAIL_COLLECTOR_DOMAIN=mail.example.com bash /tmp/install-mail-collector.sh
+```
+
+也可以自行指定密钥和安装目录：
+
+```bash
+curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/ArronHC/MailCollector/main/deploy/install-server.sh
+sudo env \
+  MAIL_COLLECTOR_DOMAIN=mail.example.com \
+  MAIL_COLLECTOR_INSTALL_DIR=/opt/mail-collector \
+  MAIL_COLLECTOR_API_KEY='replace_with_a_long_random_secret' \
+  MAIL_COLLECTOR_ENCRYPTION_KEY='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+  MAIL_COLLECTOR_INVITE_CODE='replace_with_private_invite_code' \
+  bash /tmp/install-mail-collector.sh
+```
+
+自定义 API Key 和邀请码只能包含英文字母、数字、点、下划线、波浪线和连字符，分别至少需要 24 和 12 个字符。`ENCRYPTION_KEY` 必须是 64 位十六进制字符串。需要固定程序版本时，可以额外设置 `MAIL_COLLECTOR_REF` 为包含部署文件的 release tag；后续升级会保留该值。
+
+### 部署内容
+
+默认目录结构：
+
+```text
+/opt/mail-collector/
+├── compose.sh              统一的服务管理命令，兼容 Compose v1/v2
+├── source/                 当前程序源码和 Compose 文件
+└── state/
+    ├── server.env          密钥和服务器配置，权限 600
+    ├── server.env.bak      更新前的配置备份
+    ├── data/               SQLite 邮件数据库
+    ├── caddy-data/         HTTPS 证书和 Caddy 状态
+    └── caddy-config/
+```
+
+Docker Compose 启动两个容器：
+
+- `mail-collector-app`：Node 邮件同步、API、SQLite queue 和 IMAP IDLE。
+- `mail-collector-caddy`：唯一公开入口，监听 80/443 并反向代理到应用容器。
+
+应用容器不映射宿主机端口，不能绕过 Caddy 直接访问。默认服务器配置等价于：
+
+```env
+HOST=0.0.0.0
+DATABASE_PATH=/data/mail-collector.db
+ALLOW_REMOTE_CLIENTS=true
+TRUSTED_PROXY=uniquelocal
+REQUIRE_HTTPS=true
+```
+
+`TRUSTED_PROXY=uniquelocal` 会信任私有地址来源的转发头，不会验证来源一定是 Caddy。默认 Compose 不公开应用容器的 3000 端口；不要映射该端口，也不要把不可信容器加入同一网络。
+
+### 连接桌面客户端
+
+在桌面端登录页或顶部齿轮中打开“数据与同步”，选择“自托管服务器”，填写 HTTPS 地址和服务器的 `API_KEY`，然后点击“测试并应用”。远端模式使用 API Key，不依赖跨域 Cookie。
+
+第一台设备也可以直接浏览 `https://mail.example.com`，使用脚本输出的邀请码创建唯一管理员账户。管理员注册完成后会自动关闭再次注册。
+
+多台设备连接同一服务器后：
+
+- 邮箱账号只需要在服务器模式下添加一次。
+- 邮件、标签、草稿、已读和星标状态以服务器为准。
+- 设备每 15 秒静默刷新一次，并在窗口重新聚焦时立即刷新。
+- 邮件 Provider 只由服务器同步，不会因设备数量增加而重复调用 IMAP。
+
+### 查看状态和日志
+
+```bash
+sudo /opt/mail-collector/compose.sh ps
+sudo /opt/mail-collector/compose.sh logs -f --tail=200
+```
+
+只查看邮件后端：
+
+```bash
+sudo docker logs -f --tail=200 mail-collector-app
+```
+
+### 升级服务器
+
+再次执行同一个安装命令即可。脚本会下载最新代码并重新构建容器，同时保留 `state/` 中的数据库、密钥和 Caddy 证书：
+
+```bash
+curl -fsSLo /tmp/install-mail-collector.sh https://raw.githubusercontent.com/ArronHC/MailCollector/main/deploy/install-server.sh \
+  && sudo bash /tmp/install-mail-collector.sh
+```
+
+脚本管理的域名、密钥、版本和同步调优参数会在升级时保留，并额外生成 `server.env.bak`。脚本会重新生成 `server.env`；如果手工增加了其他变量，升级后需要从备份中重新合并。
+
+### 备份和恢复
+
+为了获得一致的 SQLite 和 Caddy 状态备份，短暂停止两个容器，再打包整个 `state` 目录：
+
+```bash
+(
+  set -e
+  compose() {
+    sudo /opt/mail-collector/compose.sh "$@"
+  }
+  compose stop
+  trap 'compose start' EXIT
+  sudo tar -czf "/root/mail-collector-backup-$(date +%F-%H%M%S).tar.gz" -C /opt/mail-collector state
+  compose start
+  trap - EXIT
+)
+```
+
+恢复时停止两个容器，用备份中的 `state/` 替换当前目录，执行 `sudo chmod 600 /opt/mail-collector/state/server.env` 和 `sudo chown -R 1000:1000 /opt/mail-collector/state/data`，再重新启动 Compose。必须同时恢复 `server.env` 和数据库，否则已加密的邮箱凭据可能无法解密。
+
+### 停止或卸载
+
+停止服务但保留数据：
+
+```bash
+sudo /opt/mail-collector/compose.sh down
+```
+
+重新启动：
+
+```bash
+sudo /opt/mail-collector/compose.sh up -d
+```
+
+完全删除程序和所有邮件数据：
+
+```bash
+sudo /opt/mail-collector/compose.sh down --remove-orphans
+sudo rm -rf /opt/mail-collector
+```
+
+完全删除不可恢复，执行前必须确认已有备份。
+
+### 手工部署和高级配置
+
+不使用安装脚本时，可以复制示例环境文件并直接运行 Compose。以下命令要求 Docker Compose v2：
+
+```bash
+sudo install -d -m 700 /srv/mail-collector /srv/mail-collector/data /srv/mail-collector/caddy-data /srv/mail-collector/caddy-config
+sudo install -m 600 deploy/server.env.example /srv/mail-collector/server.env
+sudo chown -R 1000:1000 /srv/mail-collector/data
+sudo editor /srv/mail-collector/server.env
+# 设置全部 replace-me 字段、MAIL_COLLECTOR_DOMAIN 和 MAIL_COLLECTOR_STATE_DIR=/srv/mail-collector
+sudo docker compose --project-name mail-collector \
+  --env-file /srv/mail-collector/server.env \
+  -f deploy/docker-compose.server.yml \
+  up -d --build
+```
+
+使用独立 Web 前端域名时，在 `server.env` 中增加：
+
+```env
+ALLOWED_REMOTE_ORIGINS=https://mail-client.example.com
+```
+
+该 Origin 必须使用 HTTPS。桌面客户端使用随机 loopback Origin，在 `ALLOW_REMOTE_CLIENTS=true` 时会自动允许。
+
+注意：
+
+- 非 localhost/127.0.0.1 地址必须使用 HTTPS。
+- `ALLOW_REMOTE_CLIENTS` 默认关闭，不会改变现有本机部署的跨站安全边界。
+- `TRUSTED_PROXY` 必须填写实际反向代理 IP/CIDR 或受控的 Express 预设，不能信任任意来源的转发头；Node 端口还应通过防火墙限制为仅代理可访问。
+- 桌面版通过 Tauri 应用数据目录保存后端配置；只有选择“记住 API Key”时才会一并持久化密钥。浏览器版使用当前站点的 Web Storage。只应在可信个人设备上记住密钥。
+- 当前不会自动把已有本机数据库上传到服务器。首次切换时应在服务器模式下重新添加邮箱账号，或手工迁移服务器数据库。
+- 桌面应用目前仍会启动本地 sidecar，但远端模式下前端邮件请求不会使用本地数据库。
+
 ## 后端 API
 
 - `GET /api/auth/status` 查询是否已完成首次注册；`POST /api/auth/register` 使用 `email`、`password`、`inviteCode` 创建唯一管理员；`POST /api/auth/login` 使用邮箱和密码登录，`POST /api/auth/logout` 和 `GET /api/auth/session` 管理登录会话。

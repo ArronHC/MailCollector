@@ -11,6 +11,7 @@ import { ImapMailSyncer } from "./imap-syncer.js";
 import { ImapIdleService } from "./imap-idle-service.js";
 import { MailWorker } from "./mail-worker.js";
 import { providers } from "./providers.js";
+import { allowedRemoteOrigin } from "./remote-access.js";
 import { SmtpSender } from "./smtp-sender.js";
 import { SyncService } from "./sync-service.js";
 
@@ -104,15 +105,44 @@ const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
 const authAttempts = new Map<string, { count: number; resetAt: number }>();
 
 app.disable("x-powered-by");
+if (config.trustedProxy) app.set("trust proxy", config.trustedProxy);
+app.use((request, response, next) => {
+  if (config.requireHttps && !request.secure) {
+    response.status(426).json({ error: "此服务要求使用 HTTPS" });
+    return;
+  }
+  next();
+});
 app.use(express.json({ limit: "100kb" }));
 app.use((_request, response, next) => {
   response.set({
-    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https: http:; img-src 'self' data: cid: https: http:; font-src 'self' data: https: http:; media-src 'self' data: cid: https: http:; frame-src 'self' data: https: http:; object-src 'none'; base-uri 'self' https: http:; frame-ancestors 'none'; form-action 'self'",
+    "Content-Security-Policy": "default-src 'self'; connect-src 'self' https: http:; script-src 'self'; style-src 'self' 'unsafe-inline' https: http:; img-src 'self' data: cid: https: http:; font-src 'self' data: https: http:; media-src 'self' data: cid: https: http:; frame-src 'self' data: https: http:; object-src 'none'; base-uri 'self' https: http:; frame-ancestors 'none'; form-action 'self'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
   });
+  next();
+});
+
+app.use("/api", (request, response, next) => {
+  const origin = request.header("origin");
+  if (!allowedRemoteOrigin(origin, config.allowRemoteClients, config.allowedRemoteOrigins)) {
+    next();
+    return;
+  }
+  response.set({
+    "Access-Control-Allow-Origin": origin!,
+    "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
+    "Access-Control-Allow-Methods": "GET, HEAD, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Max-Age": "600",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Vary": "Origin"
+  });
+  if (request.method === "OPTIONS") {
+    response.status(204).end();
+    return;
+  }
   next();
 });
 
@@ -128,7 +158,9 @@ app.use("/api", (request, response, next) => {
         crossOrigin = true;
       }
     }
-    if (crossOrigin) {
+    const permittedApiClient = allowedRemoteOrigin(origin, config.allowRemoteClients, config.allowedRemoteOrigins)
+      && validApiKey(request.header("x-api-key") ?? "");
+    if (crossOrigin && !permittedApiClient) {
       response.status(403).json({ error: "拒绝跨站请求" });
       return;
     }
@@ -195,6 +227,7 @@ app.use("/api/auth", (_request, response, next) => {
 });
 
 app.get("/api/auth/status", (_request, response) => response.json({ registered: database.hasAppUser() }));
+app.get("/api/service", (_request, response) => response.json({ ok: true, service: "mail-collector", version: config.serviceVersion }));
 
 app.post("/api/auth/register", async (request, response, next) => {
   try {
@@ -273,7 +306,7 @@ app.get("/api/auth/session", (_request, response) => {
   const user = response.locals.authUser as { email: string } | undefined;
   response.json({ user: { email: user?.email ?? "API Key" }, legacy: !user });
 });
-app.get("/api/health", (_request, response) => response.json({ ok: true }));
+app.get("/api/health", (_request, response) => response.json({ ok: true, service: "mail-collector", version: config.serviceVersion }));
 app.get("/api/providers", (_request, response) => response.json({ providers }));
 app.get("/api/accounts", (_request, response) => response.json({ accounts: database.listPublicAccounts(syncService.syncingIds) }));
 

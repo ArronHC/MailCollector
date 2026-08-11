@@ -1,8 +1,9 @@
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { api, auth, unauthorizedEvent } from "./api";
+import { api, auth, backend, unauthorizedEvent } from "./api";
 import { AccountDialog, type AccountForm } from "./components/AccountDialog";
 import { ComposeDialog, type ComposeSeed } from "./components/ComposeDialog";
+import { BackendSettingsDialog } from "./components/BackendSettingsDialog";
 import { MailListPanel } from "./components/MailListPanel";
 import { MailReaderPanel } from "./components/MailReaderPanel";
 import { LoginScreen } from "./components/LoginScreen";
@@ -13,6 +14,7 @@ import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailPr
 import { accountSource, sourceNames } from "./data/mailData";
 
 const PAGE_SIZE = 15;
+const REMOTE_REFRESH_MS = 15_000;
 type TransitionKind = "auth" | "reader";
 let transitionSequence = 0;
 
@@ -38,10 +40,11 @@ function transitionState(update: () => void, kind: TransitionKind) {
 export default function App() {
   const [authState, setAuthState] = useState<"checking" | "authenticated" | "guest">("checking");
   const [registered, setRegistered] = useState(false);
+  const [backendSettingsOpen, setBackendSettingsOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([auth.status(), auth.restore()])
+    void backend.initialize().then(() => Promise.all([auth.status(), auth.restore()]))
       .then(([status, restored]) => {
         if (cancelled) return;
         setRegistered(status.registered);
@@ -59,12 +62,16 @@ export default function App() {
     };
   }, []);
 
-  if (authState === "checking") return <main className="auth-loading"><strong>Mail Collector</strong><span>正在连接本地邮件空间...</span></main>;
-  if (authState === "guest") return <LoginScreen registered={registered} onSignIn={async (email, password) => { await auth.signIn(email, password); transitionState(() => setAuthState("authenticated"), "auth"); }} onRegister={async (email, password, inviteCode) => { await auth.register(email, password, inviteCode); setRegistered(true); transitionState(() => setAuthState("authenticated"), "auth"); }} onKeySignIn={async (key) => { await auth.signInWithKey(key); transitionState(() => setAuthState("authenticated"), "auth"); }} />;
-  return <MailboxApp onLogout={() => { void auth.signOut().finally(() => transitionState(() => setAuthState("guest"), "auth")); }} />;
+  const remoteBackend = backend.current().mode === "remote";
+  const content = authState === "checking"
+    ? <main className="auth-loading"><strong>Mail Collector</strong><span>{remoteBackend ? "正在连接自托管服务器..." : "正在连接本地邮件空间..."}</span></main>
+    : authState === "guest"
+      ? <LoginScreen registered={registered} remoteBackend={remoteBackend} onBackendSettings={() => setBackendSettingsOpen(true)} onSignIn={async (email, password) => { await auth.signIn(email, password); transitionState(() => setAuthState("authenticated"), "auth"); }} onRegister={async (email, password, inviteCode) => { await auth.register(email, password, inviteCode); setRegistered(true); transitionState(() => setAuthState("authenticated"), "auth"); }} onKeySignIn={async (key) => { await auth.signInWithKey(key); transitionState(() => setAuthState("authenticated"), "auth"); }} />
+      : <MailboxApp onBackendSettings={() => setBackendSettingsOpen(true)} onLogout={() => { void auth.signOut().finally(() => transitionState(() => setAuthState("guest"), "auth")); }} />;
+  return <>{content}<BackendSettingsDialog open={backendSettingsOpen} onClose={() => setBackendSettingsOpen(false)} /></>;
 }
 
-function MailboxApp({ onLogout }: { onLogout: () => void }) {
+function MailboxApp({ onLogout, onBackendSettings }: { onLogout: () => void; onBackendSettings: () => void }) {
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
   const [providers, setProviders] = useState<MailProvider[]>([]);
   const [labels, setLabels] = useState<MailLabel[]>([]);
@@ -103,8 +110,18 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   const [syncError, setSyncError] = useState("");
   const [dialogError, setDialogError] = useState("");
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const messageRequestSequence = useRef(0);
+  const detailRequestSequence = useRef(0);
+  const activeMailIdRef = useRef<number | null>(null);
+  const foregroundMessageLoading = useRef(false);
+  const readerLoadingRef = useRef(false);
+  const remoteRefreshRunning = useRef(false);
+  activeMailIdRef.current = activeMailId;
 
   const activeAccount = accounts.find((account) => account.id === activeAccountId) ?? null;
+  const currentBackend = backend.current();
+  const remoteMode = currentBackend.mode === "remote";
+  const backendLabel = remoteMode ? `服务器：${new URL(currentBackend.serverUrl).host}` : "本机邮件空间";
   const unreadCount = accounts.reduce((sum, account) => sum + account.unreadCount, 0);
   function toast(text: string, tone: ToastMessage["tone"] = "success", actionLabel?: string, onAction?: () => void) {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -123,8 +140,13 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     setDraftCount(drafts.total);
   });
 
-  const loadMessages = useEffectEvent(async () => {
-    setLoading(true);
+  const loadMessages = useEffectEvent(async (silent = false) => {
+    if (silent && foregroundMessageLoading.current) return;
+    const requestId = ++messageRequestSequence.current;
+    if (!silent) {
+      foregroundMessageLoading.current = true;
+      setLoading(true);
+    }
     setListError("");
     try {
       const params = new URLSearchParams({ view, limit: String(PAGE_SIZE), offset: String(offset) });
@@ -138,17 +160,29 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
         if (ids.length) params.set("accountIds", ids.join(",")); else { setMails([]); setTotal(0); return; }
       }
       const data = await api.messages(params);
+      if (requestId !== messageRequestSequence.current) return;
       setMails(data.messages);
       setTotal(data.total);
-      setCheckedIds(new Set());
+      if (silent) {
+        const visible = new Set(data.messages.map((message) => message.id));
+        setCheckedIds((current) => new Set([...current].filter((id) => visible.has(id))));
+      } else setCheckedIds(new Set());
       if (activeMailId && !data.messages.some((mail) => mail.id === activeMailId) && !new URLSearchParams(location.search).has("message")) {
+        detailRequestSequence.current += 1;
+        activeMailIdRef.current = null;
+        readerLoadingRef.current = false;
+        setReaderLoading(false);
+        setReaderError("");
         setActiveMailId(null);
         setMailDetail(null);
       }
     } catch (error) {
-      setListError(error instanceof Error ? error.message : "无法加载邮件");
+      if (requestId === messageRequestSequence.current) setListError(error instanceof Error ? error.message : "无法加载邮件");
     } finally {
-      setLoading(false);
+      if (!silent && requestId === messageRequestSequence.current) {
+        foregroundMessageLoading.current = false;
+        setLoading(false);
+      }
     }
   });
 
@@ -161,6 +195,36 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     if (directId > 0) void openMailById(directId);
   }, []);
 
+  const refreshRemoteState = useEffectEvent(async () => {
+    if (remoteRefreshRunning.current) return;
+    remoteRefreshRunning.current = true;
+    const detailId = activeMailIdRef.current;
+    const detailRequestId = detailRequestSequence.current;
+    const refreshDetail = detailId && !readerLoadingRef.current;
+    try {
+      await Promise.all([
+        loadMetadata(),
+        loadMessages(true),
+        refreshDetail ? api.message(detailId).then(({ message }) => {
+          if (detailRequestId === detailRequestSequence.current && activeMailIdRef.current === detailId) setMailDetail(message);
+        }) : Promise.resolve()
+      ]);
+    } finally {
+      remoteRefreshRunning.current = false;
+    }
+  });
+
+  useEffect(() => {
+    if (backend.current().mode !== "remote") return;
+    const refresh = () => { void refreshRemoteState().catch(() => undefined); };
+    const timer = window.setInterval(refresh, REMOTE_REFRESH_MS);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => { setOffset(0); setQuery(search.trim()); }, 250);
     return () => window.clearTimeout(timer);
@@ -169,22 +233,30 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   useEffect(() => { void loadMessages(); }, [activeAccountId, activeLabelId, activeTab, view, starredFilter, offset, query, accounts.length]);
 
   async function openMailById(id: number) {
+    const requestId = ++detailRequestSequence.current;
+    activeMailIdRef.current = id;
     setActiveMailId(id);
+    readerLoadingRef.current = true;
     setReaderLoading(true);
     setReaderError("");
     try {
       const { message } = await api.message(id);
+      if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
       setMailDetail(message);
       if (!message.isRead && message.kind === "received") {
         const result = await api.updateMessage(id, { isRead: true });
+        if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
         setMailDetail(result.message);
         setMails((current) => current.map((mail) => mail.id === id ? { ...mail, isRead: true } : mail));
         await loadMetadata();
       }
     } catch (error) {
-      setReaderError(error instanceof Error ? error.message : "无法读取邮件");
+      if (requestId === detailRequestSequence.current && activeMailIdRef.current === id) setReaderError(error instanceof Error ? error.message : "无法读取邮件");
     } finally {
-      setReaderLoading(false);
+      if (requestId === detailRequestSequence.current && activeMailIdRef.current === id) {
+        readerLoadingRef.current = false;
+        setReaderLoading(false);
+      }
     }
   }
 
@@ -215,7 +287,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     if (!before) return;
     try {
       const result = await api.updateMessage(id, actions);
-      if (mailDetail?.id === id) setMailDetail(result.message);
+      if (activeMailIdRef.current === id) setMailDetail(result.message);
       setMails((current) => current.map((mail) => mail.id === id ? { ...mail, ...result.message } : mail));
       await Promise.all([loadMessages(), loadMetadata()]);
       const undo = previousActions(before, actions);
@@ -226,8 +298,8 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   async function deleteCurrent() {
     if (!mailDetail) return;
     if (mailDetail.folder !== "trash") return updateOne(mailDetail.id, { folder: "trash", snoozedUntil: null }, "已移至垃圾箱");
-    if (!window.confirm("永久删除这封本地邮件？此操作无法撤销。")) return;
-    try { await api.deleteMessage(mailDetail.id); setMailDetail(null); setActiveMailId(null); await Promise.all([loadMessages(), loadMetadata()]); toast("邮件已永久删除"); } catch (error) { toast(error instanceof Error ? error.message : "删除失败", "error"); }
+    if (!window.confirm(remoteMode ? "永久删除服务器上的这封邮件记录？此变更会影响所有设备。" : "永久删除这封本地邮件？此操作无法撤销。")) return;
+    try { await api.deleteMessage(mailDetail.id); detailRequestSequence.current += 1; activeMailIdRef.current = null; readerLoadingRef.current = false; setReaderLoading(false); setReaderError(""); setMailDetail(null); setActiveMailId(null); await Promise.all([loadMessages(), loadMetadata()]); toast("邮件已永久删除"); } catch (error) { toast(error instanceof Error ? error.message : "删除失败", "error"); }
   }
 
   async function bulkAction(actions: MessageActions) {
@@ -244,7 +316,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
 
   async function permanentDeleteSelected() {
     const ids = Array.from(checkedIds);
-    if (!ids.length || !window.confirm(`永久删除选中的 ${ids.length} 封本地邮件？`)) return;
+    if (!ids.length || !window.confirm(remoteMode ? `永久删除服务器上选中的 ${ids.length} 封邮件记录？此变更会影响所有设备。` : `永久删除选中的 ${ids.length} 封本地邮件？`)) return;
     try { await Promise.all(ids.map((id) => api.deleteMessage(id))); setCheckedIds(new Set()); await Promise.all([loadMessages(), loadMetadata()]); toast(`已永久删除 ${ids.length} 封邮件`); } catch (error) { toast(error instanceof Error ? error.message : "删除失败", "error"); }
   }
 
@@ -311,7 +383,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   }
 
   async function manageAccount(action: "sync" | "toggle" | "delete", account: MailAccount) {
-    if (action === "delete" && !window.confirm(`确认删除 ${account.email}？本地邮件也会删除。`)) return;
+    if (action === "delete" && !window.confirm(remoteMode ? `确认从服务器删除 ${account.email}？所有设备都会失去该账号及其邮件。` : `确认删除 ${account.email}？本地邮件也会删除。`)) return;
     setDialogBusy(true); setDialogError("");
     try { if (action === "sync") await api.syncAccount(account.id); if (action === "toggle") await api.setAccountEnabled(account.id, !account.enabled); if (action === "delete") await api.deleteAccount(account.id); await Promise.all([loadMetadata(), loadMessages()]); toast(action === "sync" ? "邮箱同步完成" : action === "toggle" ? "账户状态已更新" : "邮箱账户已删除"); }
     catch (error) { setDialogError(error instanceof Error ? error.message : "账户操作失败"); }
@@ -324,14 +396,14 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   }
 
   return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-    <TopBar search={search} onSearch={setSearch} accountCount={accounts.length} syncing={syncing} classifying={classifying} error={syncError} onSync={() => void syncMailbox()} onClassify={() => void classifyMailbox()} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onHelp={() => setHelpOpen(true)} onSettings={() => setDialogOpen(true)} onLogout={onLogout} />
+    <TopBar search={search} onSearch={setSearch} accountCount={accounts.length} syncing={syncing} classifying={classifying} error={syncError} backendLabel={backendLabel} onSync={() => void syncMailbox()} onClassify={() => void classifyMailbox()} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onHelp={() => setHelpOpen(true)} onSettings={onBackendSettings} onManageAccounts={() => setDialogOpen(true)} onLogout={onLogout} />
     <div className="content-grid"><Sidebar accounts={accounts} labels={labels} activeAccountId={activeAccountId} activeNavigation={activeNavigation} activeLabelId={activeLabelId} unreadCount={unreadCount} draftCount={draftCount} onAccountSelect={(id) => { setActiveAccountId(id); setActiveNavigation(""); setActiveLabelId(null); setView("inbox"); setStarredFilter(false); setActiveTab("全部"); setOffset(0); }} onViewChange={(label, nextView, starred) => { setActiveAccountId(null); setActiveNavigation(label); setActiveLabelId(null); setView(nextView); setStarredFilter(Boolean(starred)); setActiveTab("全部"); setOffset(0); }} onLabelSelect={(label) => { setActiveAccountId(null); setActiveNavigation(label.name); setActiveLabelId(label.id); setView("all"); setStarredFilter(false); setOffset(0); }} onCompose={() => openCompose()} onAddAccount={() => setDialogOpen(true)} onManageAccount={() => setDialogOpen(true)} onCreateLabel={() => setLabelOpen(true)} />
       <MailListPanel mails={mails} accounts={accounts} labels={labels} activeAccount={activeAccount} title={activeNavigation || "收件箱"} activeTab={activeTab} activeMailId={activeMailId} checkedIds={checkedIds} total={total} offset={offset} loading={loading} syncing={syncing} error={listError} trashView={view === "trash"} onTabChange={(tab) => { setActiveTab(tab); setOffset(0); }} onSelect={(mail) => void selectMail(mail)} onStar={(id) => void updateOne(id, { isStarred: !mails.find((mail) => mail.id === id)?.isStarred }, "星标状态已更新")} onCheck={(id) => setCheckedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onCheckAll={() => setCheckedIds((current) => mails.length && mails.every((mail) => current.has(mail.id)) ? new Set() : new Set(mails.map((mail) => mail.id)))} onSelectWhere={selectWhere} onRefresh={() => void syncMailbox()} onBulk={(actions) => void bulkAction(actions)} onPermanentDelete={() => void permanentDeleteSelected()} onPrevious={() => setOffset(Math.max(0, offset - PAGE_SIZE))} onNext={() => setOffset(offset + PAGE_SIZE)} />
-      <MailReaderPanel mail={mailDetail} loading={readerLoading} error={readerError} labels={labels} expanded={readerExpanded} onToggleExpanded={toggleReaderExpanded} onAction={(actions) => { if (mailDetail) void updateOne(mailDetail.id, actions); }} onDelete={() => void deleteCurrent()} onStar={() => { if (mailDetail) void updateOne(mailDetail.id, { isStarred: !mailDetail.isStarred }, "星标状态已更新"); }} onReply={reply} onBack={() => { setReaderExpanded(false); setActiveMailId(null); setMailDetail(null); }} />
+      <MailReaderPanel mail={mailDetail} loading={readerLoading} error={readerError} labels={labels} expanded={readerExpanded} onToggleExpanded={toggleReaderExpanded} onAction={(actions) => { if (mailDetail) void updateOne(mailDetail.id, actions); }} onDelete={() => void deleteCurrent()} onStar={() => { if (mailDetail) void updateOne(mailDetail.id, { isStarred: !mailDetail.isStarred }, "星标状态已更新"); }} onReply={reply} onBack={() => { detailRequestSequence.current += 1; activeMailIdRef.current = null; readerLoadingRef.current = false; setReaderLoading(false); setReaderError(""); setReaderExpanded(false); setActiveMailId(null); setMailDetail(null); }} />
     </div>
     <AccountDialog open={dialogOpen} providers={providers} accounts={accounts} busy={dialogBusy} error={dialogError} onClose={() => { setDialogOpen(false); setDialogError(""); }} onSubmit={addAccount} onSync={(account) => manageAccount("sync", account)} onToggle={(account) => manageAccount("toggle", account)} onDelete={(account) => manageAccount("delete", account)} />
     <ComposeDialog open={composeOpen} accounts={accounts} seed={composeSeed} busy={composeBusy} status={composeStatus} onClose={(content, id, discard) => void closeCompose(content, id, discard)} onSend={(content, id) => void sendMessage(content, id)} />
-    <Modal open={helpOpen} title="Mail Collector 帮助" onClose={() => setHelpOpen(false)}><div className="help-content"><p>使用顶部搜索查找发件人、主题和正文内容。勾选邮件后可批量归档、移动、延后或添加标签。</p><p>自动分类会在同步新邮件时运行，也可通过顶部按钮重新分析已有邮件。分类完全在本地完成，并保留手工标签。</p><p>双击左侧账户可进入账户管理。发送邮件使用对应邮箱的 SMTP 服务和已保存的应用密码或授权码。</p><p>快捷提示：双击写信窗口标题可最小化；关闭有内容的写信窗口会自动保存草稿。</p></div></Modal>
+    <Modal open={helpOpen} title="Mail Collector 帮助" onClose={() => setHelpOpen(false)}><div className="help-content"><p>使用顶部搜索查找发件人、主题和正文内容。勾选邮件后可批量归档、移动、延后或添加标签。</p><p>自动分类会在同步新邮件时运行，也可通过顶部按钮重新分析已有邮件。分类在当前后端完成，并保留手工标签。</p><p>齿轮按钮可切换本机或自托管服务器；双击左侧账户可进入邮箱账户管理。</p><p>快捷提示：双击写信窗口标题可最小化；关闭有内容的写信窗口会自动保存草稿。</p></div></Modal>
     <Modal open={labelOpen} title="新建标签" onClose={() => setLabelOpen(false)} className="small-modal"><div className="label-create"><input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} placeholder="标签名称" autoFocus onKeyDown={(event) => { if (event.key === "Enter") void createLabel(); }} /><footer><button onClick={() => setLabelOpen(false)}>取消</button><button className="primary-action" onClick={() => void createLabel()} disabled={!newLabel.trim()}>创建</button></footer></div></Modal>
     <ToastStack toasts={toasts} dismiss={(id) => setToasts((current) => current.filter((item) => item.id !== id))} />
   </div>;
