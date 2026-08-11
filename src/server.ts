@@ -5,7 +5,7 @@ import express from "express";
 import { z } from "zod";
 import { createSessionToken, hashPassword, hashSessionToken, normalizeEmail, readCookie, verifyPassword } from "./auth.js";
 import { config } from "./config.js";
-import { encryptSecret } from "./crypto.js";
+import { decryptSecret, encryptSecret } from "./crypto.js";
 import { MailDatabase } from "./database.js";
 import { ImapMailSyncer } from "./imap-syncer.js";
 import { ImapIdleService } from "./imap-idle-service.js";
@@ -14,6 +14,7 @@ import { providers } from "./providers.js";
 import { allowedRemoteOrigin } from "./remote-access.js";
 import { SmtpSender } from "./smtp-sender.js";
 import { SyncService } from "./sync-service.js";
+import type { MailAccount } from "./types.js";
 
 const accountSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -78,6 +79,36 @@ const registrationSchema = z.object({
   inviteCode: z.string().trim().min(1).max(200)
 });
 const loginSchema = z.object({ email: emailSchema, password: passwordSchema });
+const syncTimestampSchema = z.string().datetime({ offset: true });
+const portableAccountSchema = accountSchema.extend({
+  syncId: z.string().uuid(),
+  enabled: z.boolean(),
+  syncUpdatedAt: syncTimestampSchema
+});
+const configEnvelopeSchema = z.object({
+  version: z.string().min(1),
+  iv: z.string().min(1),
+  ciphertext: z.string().min(1)
+}).strict();
+const configBundlePutSchema = z.object({
+  baseRevision: z.coerce.number().int().min(0),
+  envelope: configEnvelopeSchema
+}).strict().refine((value) => Buffer.byteLength(JSON.stringify(value.envelope)) <= 512 * 1024, "配置包超过 512KB 限制");
+const configLocalImportSchema = z.object({
+  accounts: z.array(portableAccountSchema).max(100),
+  tombstones: z.array(z.object({ syncId: z.string().uuid(), deletedAt: syncTimestampSchema }).strict()).max(100).default([])
+}).strict().superRefine((value, context) => {
+  const accountIds = new Set<string>();
+  for (const [index, account] of value.accounts.entries()) {
+    if (accountIds.has(account.syncId)) context.addIssue({ code: "custom", path: ["accounts", index, "syncId"], message: "syncId 重复" });
+    accountIds.add(account.syncId);
+  }
+  const tombstoneIds = new Set<string>();
+  for (const [index, tombstone] of value.tombstones.entries()) {
+    if (tombstoneIds.has(tombstone.syncId)) context.addIssue({ code: "custom", path: ["tombstones", index, "syncId"], message: "syncId 重复" });
+    tombstoneIds.add(tombstone.syncId);
+  }
+});
 
 const database = new MailDatabase(config.databasePath);
 const syncer = new ImapMailSyncer(config.encryptionKey, config.allowPrivateMailHosts);
@@ -92,7 +123,7 @@ const syncService = new SyncService(database, syncer, config.initialSyncLimit, c
   providerConcurrency: config.providerMaxConcurrency
 });
 const mailWorker = new MailWorker(database, syncService, config.syncLeaseSeconds * 1000);
-const idleService = config.imapIdleEnabled ? new ImapIdleService(database, syncService, syncer, {
+const idleService = !config.configSyncOnly && config.imapIdleEnabled ? new ImapIdleService(database, syncService, syncer, {
   scanIntervalMs: config.imapIdleScanSeconds * 1000,
   debounceMs: config.imapIdleDebounceMs,
   reconnectMaxMs: config.imapIdleReconnectMaxSeconds * 1000,
@@ -113,6 +144,7 @@ app.use((request, response, next) => {
   }
   next();
 });
+app.use("/api/config-bundle", express.json({ limit: "520kb" }));
 app.use(express.json({ limit: "100kb" }));
 app.use((_request, response, next) => {
   response.set({
@@ -134,7 +166,7 @@ app.use("/api", (request, response, next) => {
   response.set({
     "Access-Control-Allow-Origin": origin!,
     "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
-    "Access-Control-Allow-Methods": "GET, HEAD, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Max-Age": "600",
     "Cross-Origin-Resource-Policy": "cross-origin",
     "Vary": "Origin"
@@ -181,6 +213,39 @@ function validApiKey(value: string): boolean {
   return validSecret(value, expectedApiKey);
 }
 
+type PortableAccount = z.infer<typeof portableAccountSchema>;
+
+function passwordMatches(account: MailAccount, password: string): boolean {
+  try {
+    return decryptSecret(account.encryptedPassword, config.encryptionKey) === password;
+  } catch {
+    return false;
+  }
+}
+
+function connectionConfigurationChanged(account: MailAccount | null, input: PortableAccount): boolean {
+  return !account
+    || account.email !== input.email
+    || account.host !== input.host
+    || account.port !== input.port
+    || account.secure !== input.secure
+    || account.username !== input.username
+    || account.mailbox !== input.mailbox
+    || !passwordMatches(account, input.password);
+}
+
+function portableConfigurationMatches(account: MailAccount, input: PortableAccount): boolean {
+  return account.name === input.name
+    && account.email === input.email
+    && account.host === input.host
+    && account.port === input.port
+    && account.secure === input.secure
+    && account.username === input.username
+    && account.mailbox === input.mailbox
+    && account.enabled === input.enabled
+    && passwordMatches(account, input.password);
+}
+
 function allowAuthAttempt(request: express.Request, response: express.Response): boolean {
   const key = request.ip || request.socket.remoteAddress || "unknown";
   const now = Date.now();
@@ -220,6 +285,14 @@ function clearAppSession(request: express.Request, response: express.Response): 
   if (token) database.deleteAppSession(hashSessionToken(token));
   response.clearCookie(sessionCookieName, { httpOnly: true, sameSite: "strict", secure: request.secure, path: "/api" });
 }
+
+app.use("/api/auth", (_request, response, next) => {
+  if (config.configSyncOnly) {
+    response.status(404).json({ error: "不存在" });
+    return;
+  }
+  next();
+});
 
 app.use("/api/auth", (_request, response, next) => {
   response.set("Cache-Control", "no-store");
@@ -275,6 +348,10 @@ app.post("/api/auth/logout", (request, response) => {
 });
 
 app.post("/api/desktop/shutdown", (request, response) => {
+  if (config.configSyncOnly) {
+    response.status(404).json({ error: "不存在" });
+    return;
+  }
   const token = request.header("x-desktop-shutdown-token") ?? "";
   if (!expectedDesktopShutdownToken.length || !validSecret(token, expectedDesktopShutdownToken)) {
     response.status(404).json({ error: "不存在" });
@@ -282,6 +359,26 @@ app.post("/api/desktop/shutdown", (request, response) => {
   }
   response.status(204).end();
   setImmediate(() => void closeServer());
+});
+
+app.use("/api", (request, response, next) => {
+  const apiPath = request.originalUrl.split("?", 1)[0]!;
+  if (!config.configSyncOnly
+    || apiPath === "/api/service"
+    || apiPath === "/api/health"
+    || apiPath === "/api/config-bundle") {
+    next();
+    return;
+  }
+  response.status(404).json({ error: "不存在" });
+});
+
+app.use("/api/config-bundle", (request, response, next) => {
+  if (!validApiKey(request.header("x-api-key") ?? "")) {
+    response.status(401).json({ error: "未授权" });
+    return;
+  }
+  next();
 });
 
 app.use("/api", (request, response, next) => {
@@ -307,14 +404,125 @@ app.get("/api/auth/session", (_request, response) => {
   response.json({ user: { email: user?.email ?? "API Key" }, legacy: !user });
 });
 app.get("/api/health", (_request, response) => response.json({ ok: true, service: "mail-collector", version: config.serviceVersion }));
+
+app.get("/api/config-bundle", (_request, response) => response.json(database.getConfigBundle()));
+
+app.put("/api/config-bundle", (request, response, next) => {
+  try {
+    const input = configBundlePutSchema.parse(request.body);
+    const result = database.compareAndSwapConfigBundle(input.baseRevision, input.envelope);
+    if (!result.ok) return response.status(409).json({ error: "配置包版本冲突", currentRevision: result.currentRevision });
+    response.json({ revision: result.revision });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.use("/api", (_request, response, next) => {
+  if (!config.configSyncOnly) {
+    next();
+    return;
+  }
+  response.status(404).json({ error: "不存在" });
+});
+
+app.get("/api/config-local/export", (_request, response) => {
+  response.json({
+    accounts: database.listAccounts().map((account) => ({
+      syncId: account.syncId,
+      name: account.name,
+      email: account.email,
+      host: account.host,
+      port: account.port,
+      secure: account.secure,
+      username: account.username,
+      password: decryptSecret(account.encryptedPassword, config.encryptionKey),
+      mailbox: account.mailbox,
+      enabled: account.enabled,
+      syncUpdatedAt: account.syncUpdatedAt
+    }))
+  });
+});
+
+app.post("/api/config-local/import", async (request, response, next) => {
+  try {
+    const input = configLocalImportSchema.parse(request.body);
+    const counts = { created: 0, updated: 0, unchanged: 0, stale: 0, disabled: 0, tombstonesIgnored: 0, queued: 0 };
+    const prepared: Array<{
+      input: PortableAccount;
+      existing: MailAccount | null;
+      encryptedPassword: string;
+      mailSettingsChanged: boolean;
+    }> = [];
+
+    for (const accountInput of input.accounts) {
+      const existing = database.getAccountBySyncId(accountInput.syncId);
+      const incomingTime = Date.parse(accountInput.syncUpdatedAt);
+      const existingTime = existing ? Date.parse(existing.syncUpdatedAt) : 0;
+      if (existing && incomingTime <= existingTime) {
+        if (incomingTime === existingTime && portableConfigurationMatches(existing, accountInput)) counts.unchanged += 1;
+        else counts.stale += 1;
+        continue;
+      }
+      const encryptedPassword = encryptSecret(accountInput.password, config.encryptionKey);
+      const mailSettingsChanged = connectionConfigurationChanged(existing, accountInput);
+      prepared.push({ input: accountInput, existing, encryptedPassword, mailSettingsChanged });
+    }
+
+    let refreshIdle = false;
+    for (const item of prepared) {
+      const result = database.upsertSyncedAccount({
+        syncId: item.input.syncId,
+        name: item.input.name,
+        email: item.input.email,
+        host: item.input.host,
+        port: item.input.port,
+        secure: item.input.secure,
+        username: item.input.username,
+        encryptedPassword: item.encryptedPassword,
+        mailbox: item.input.mailbox,
+        enabled: item.input.enabled,
+        syncUpdatedAt: item.input.syncUpdatedAt
+      });
+      counts[result.status] += 1;
+      if (result.status === "created" || result.status === "updated") refreshIdle = true;
+      const enabledAgain = Boolean(item.existing && !item.existing.enabled && result.account.enabled);
+      if (result.account.enabled && (result.status === "created" || result.status === "updated")
+        && (result.status === "created" || result.connectionChanged || item.mailSettingsChanged || enabledAgain)) {
+        const jobType = result.status === "created" || result.connectionChanged || result.account.uidValidity === null ? "initial" : "reconcile";
+        database.enqueueJob(result.account.id, jobType, jobType === "initial" ? 1 : 3, "config_import");
+        counts.queued += 1;
+      }
+    }
+
+    for (const tombstone of input.tombstones) {
+      const result = database.applyAccountTombstone(tombstone.syncId, tombstone.deletedAt);
+      if (result === "applied") {
+        counts.disabled += 1;
+        refreshIdle = true;
+      } else {
+        counts.tombstonesIgnored += 1;
+      }
+    }
+    if (refreshIdle) idleService?.refresh();
+    response.json(counts);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/providers", (_request, response) => response.json({ providers }));
 app.get("/api/accounts", (_request, response) => response.json({ accounts: database.listPublicAccounts(syncService.syncingIds) }));
 
 app.post("/api/accounts", async (request, response, next) => {
   try {
     const input = accountSchema.parse(request.body);
+    const syncId = crypto.randomUUID();
+    const syncUpdatedAt = new Date().toISOString();
     const candidate = {
       id: 0,
+      syncId,
+      syncUpdatedAt,
       name: input.name,
       email: input.email,
       host: input.host,
@@ -337,10 +545,12 @@ app.post("/api/accounts", async (request, response, next) => {
       nextSyncAt: null,
       backfillCursor: null,
       backfillStatus: "pending" as const,
-      createdAt: new Date().toISOString()
+      createdAt: syncUpdatedAt
     };
     await syncer.testConnection(candidate);
     const account = database.createAccount({
+      syncId: candidate.syncId,
+      syncUpdatedAt: candidate.syncUpdatedAt,
       name: candidate.name,
       email: candidate.email,
       host: candidate.host,
@@ -584,21 +794,25 @@ export const server = app.listen(config.port, config.host, () => {
   console.log(`Mail Collector is running at http://${config.host}:${config.port}`);
 });
 
-syncService.scheduleDueAccounts();
-idleService?.start();
-const schedulerTimer = setInterval(() => syncService.scheduleDueAccounts(), config.syncIntervalMinutes * 60_000);
-schedulerTimer.unref();
-const workerTimer = setInterval(() => void mailWorker.drain(), config.workerIntervalSeconds * 1000);
-workerTimer.unref();
-void mailWorker.drain();
+let schedulerTimer: NodeJS.Timeout | null = null;
+let workerTimer: NodeJS.Timeout | null = null;
+if (!config.configSyncOnly) {
+  syncService.scheduleDueAccounts();
+  idleService?.start();
+  schedulerTimer = setInterval(() => syncService.scheduleDueAccounts(), config.syncIntervalMinutes * 60_000);
+  schedulerTimer.unref();
+  workerTimer = setInterval(() => void mailWorker.drain(), config.workerIntervalSeconds * 1000);
+  workerTimer.unref();
+  void mailWorker.drain();
+}
 
 let closePromise: Promise<void> | null = null;
 
 export function closeServer(): Promise<void> {
   if (closePromise) return closePromise;
   closePromise = (async () => {
-    clearInterval(schedulerTimer);
-    clearInterval(workerTimer);
+    if (schedulerTimer) clearInterval(schedulerTimer);
+    if (workerTimer) clearInterval(workerTimer);
     await idleService?.stop();
     syncService.stop();
     await mailWorker.stop();

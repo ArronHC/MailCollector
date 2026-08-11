@@ -12,6 +12,8 @@ export interface MailLabel {
 
 export interface MailAccount {
   id: number;
+  syncId: string;
+  syncUpdatedAt: string;
   name: string;
   email: string;
   host: string;

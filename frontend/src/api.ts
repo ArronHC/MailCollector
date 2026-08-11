@@ -5,6 +5,7 @@ export type { BackendSettings } from "./backend-settings";
 
 const backendSettingsKey = "mailCollectorBackend";
 const legacyApiKey = "mailCollectorApiKey";
+const cloudSyncKey = "mailCollectorCloudSyncKey";
 function loadBackend(): BackendSettings {
   try {
     const stored = JSON.parse(localStorage.getItem(backendSettingsKey) ?? "null") as BackendSettings | null;
@@ -17,7 +18,7 @@ function loadBackend(): BackendSettings {
 let activeBackend = loadBackend();
 let rememberedApiKey = false;
 
-type StoredDesktopBackend = BackendSettings & { apiKey?: string | null };
+type StoredDesktopBackend = BackendSettings & { apiKey?: string | null; syncKey?: string | null };
 
 function isTauri(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -28,9 +29,9 @@ async function loadDesktopBackend(): Promise<StoredDesktopBackend | null> {
   return invoke<StoredDesktopBackend | null>("load_client_backend_settings");
 }
 
-async function saveDesktopBackend(settings: BackendSettings, key: string | null): Promise<void> {
+async function saveDesktopBackend(settings: BackendSettings, key: string | null, syncKey: string | null): Promise<void> {
   if (!isTauri()) return;
-  await invoke("save_client_backend_settings", { settings: { ...settings, apiKey: key } });
+  await invoke("save_client_backend_settings", { settings: { ...settings, apiKey: key, syncKey } });
 }
 
 function targetId(settings = activeBackend): string {
@@ -45,28 +46,40 @@ function persistentApiKeyName(settings = activeBackend): string {
   return `mailCollectorRememberedApiKey:${targetId(settings)}`;
 }
 
-function loadApiKey(settings = activeBackend): string {
+function loadCloudApiKey(settings = activeBackend): string {
   return sessionStorage.getItem(sessionApiKeyName(settings))
     ?? localStorage.getItem(persistentApiKeyName(settings))
-    ?? (settings.mode === "local" ? sessionStorage.getItem(legacyApiKey) : null)
     ?? "";
 }
 
-let apiKey = loadApiKey();
+function loadSyncKey(): string {
+  return sessionStorage.getItem(cloudSyncKey) ?? localStorage.getItem(cloudSyncKey) ?? "";
+}
+
+function loadLocalApiKey(): string {
+  return sessionStorage.getItem(sessionApiKeyName(defaultBackend))
+    ?? localStorage.getItem(persistentApiKeyName(defaultBackend))
+    ?? sessionStorage.getItem(legacyApiKey)
+    ?? "";
+}
+
+let localApiKey = loadLocalApiKey();
+let apiKey = loadCloudApiKey();
+let syncKey = loadSyncKey();
 rememberedApiKey = Boolean(localStorage.getItem(persistentApiKeyName()));
 export const unauthorizedEvent = "mail-collector:unauthorized";
 
-function apiUrl(path: string, settings = activeBackend): string {
-  return settings.mode === "remote" ? `${settings.serverUrl}${path}` : path;
+function clearLocalApiKey() {
+  localApiKey = "";
+  sessionStorage.removeItem(legacyApiKey);
+  sessionStorage.removeItem(sessionApiKeyName(defaultBackend));
+  localStorage.removeItem(persistentApiKeyName(defaultBackend));
 }
 
-function clearApiKey() {
-  apiKey = "";
-  sessionStorage.removeItem(sessionApiKeyName());
-  localStorage.removeItem(persistentApiKeyName());
-  if (activeBackend.mode === "local") sessionStorage.removeItem(legacyApiKey);
-  rememberedApiKey = false;
-  if (isTauri()) void saveDesktopBackend(activeBackend, null).catch(() => undefined);
+function removeStoredCloudCredentials(settings: BackendSettings): void {
+  if (settings.mode !== "remote") return;
+  sessionStorage.removeItem(sessionApiKeyName(settings));
+  localStorage.removeItem(persistentApiKeyName(settings));
 }
 
 function storeApiKey(value: string, remember: boolean, settings = activeBackend): void {
@@ -78,21 +91,29 @@ function storeApiKey(value: string, remember: boolean, settings = activeBackend)
   if (settings === activeBackend) rememberedApiKey = remember;
 }
 
-async function fetchApi(path: string, options: RequestInit = {}, settings = activeBackend, key = apiKey): Promise<Response> {
+async function fetchLocal(path: string, options: RequestInit = {}, key = localApiKey): Promise<Response> {
   const headers = new Headers(options.headers);
   if (options.body) headers.set("Content-Type", "application/json");
   if (key) headers.set("X-API-Key", key);
-  return fetch(apiUrl(path, settings), {
+  return fetch(path, {
     ...options,
     headers,
-    credentials: settings.mode === "local" ? "same-origin" : "omit"
+    credentials: "same-origin"
   });
 }
 
+async function fetchCloud(path: string, options: RequestInit = {}, settings = activeBackend, key = apiKey): Promise<Response> {
+  if (settings.mode !== "remote") throw new Error("云配置同步未启用");
+  const headers = new Headers(options.headers);
+  if (options.body) headers.set("Content-Type", "application/json");
+  if (key) headers.set("X-API-Key", key);
+  return fetch(`${settings.serverUrl}${path}`, { ...options, headers, credentials: "omit" });
+}
+
 async function request<T>(path: string, options: RequestInit = {}, notifyUnauthorized = true): Promise<T> {
-  const response = await fetchApi(path, options);
+  const response = await fetchLocal(path, options);
   if (response.status === 401 && notifyUnauthorized) {
-    clearApiKey();
+    clearLocalApiKey();
     window.dispatchEvent(new Event(unauthorizedEvent));
   }
   if (!response.ok) {
@@ -107,24 +128,34 @@ export const backend = {
     const desktop = await loadDesktopBackend();
     if (!desktop) return;
     activeBackend = normalizeBackendSettings(desktop);
-    apiKey = desktop.apiKey?.trim() || loadApiKey(activeBackend);
+    if (activeBackend.mode === "local") {
+      localApiKey = desktop.apiKey?.trim() || loadLocalApiKey();
+      if (localApiKey) sessionStorage.setItem(legacyApiKey, localApiKey);
+      apiKey = "";
+      syncKey = "";
+      rememberedApiKey = false;
+      return;
+    }
+    apiKey = desktop.apiKey?.trim() || loadCloudApiKey(activeBackend);
+    syncKey = desktop.syncKey?.trim() || loadSyncKey();
     rememberedApiKey = Boolean(desktop.apiKey?.trim());
     if (apiKey) sessionStorage.setItem(sessionApiKeyName(activeBackend), apiKey);
+    if (syncKey) sessionStorage.setItem(cloudSyncKey, syncKey);
   },
   current: (): BackendSettings => ({ ...activeBackend }),
   apiKey: (): string => apiKey,
+  syncKey: (): string => syncKey,
   remembered: (): boolean => rememberedApiKey,
   normalize: normalizeBackendSettings,
-  async test(settings: BackendSettings, key: string): Promise<{ version?: string }> {
+  async test(settings: BackendSettings, key: string, encryptionKey = ""): Promise<{ version?: string }> {
     const normalized = normalizeBackendSettings(settings);
-    if (normalized.mode === "remote" && !key.trim()) throw new Error("请输入服务器 API Key");
+    if (normalized.mode === "local") return {};
+    if (!key.trim()) throw new Error("请输入服务器 API Key");
+    if (!/^[a-fA-F0-9]{64}$/.test(encryptionKey.trim())) throw new Error("同步密钥必须是 64 位十六进制字符");
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 10_000);
     try {
-      let response = await fetchApi("/api/health", { signal: controller.signal }, normalized, key.trim());
-      if (normalized.mode === "local" && response.status === 401) {
-        response = await fetchApi("/api/service", { signal: controller.signal }, normalized, "");
-      }
+      const response = await fetchCloud("/api/health", { signal: controller.signal }, normalized, key.trim());
       if (!response.ok) {
         const body = await response.json().catch(() => ({})) as { error?: string };
         throw new Error(body.error ?? `连接失败 (${response.status})`);
@@ -139,16 +170,36 @@ export const backend = {
       window.clearTimeout(timer);
     }
   },
-  async save(settings: BackendSettings, key: string, remember: boolean): Promise<void> {
+  async cloudBundle(settings: BackendSettings, key: string): Promise<{ revision: number; envelope: CloudConfigEnvelope | null }> {
     const normalized = normalizeBackendSettings(settings);
-    const nextRemembered = remember && Boolean(key.trim());
-    if (isTauri()) await saveDesktopBackend(normalized, nextRemembered ? key.trim() : null);
+    const response = await fetchCloud("/api/config-bundle", {}, normalized, key.trim());
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(body.error ?? `无法读取云配置 (${response.status})`);
+    }
+    return response.json() as Promise<{ revision: number; envelope: CloudConfigEnvelope | null }>;
+  },
+  async save(settings: BackendSettings, key: string, encryptionKey: string, remember: boolean): Promise<void> {
+    const normalized = normalizeBackendSettings(settings);
+    const previous = activeBackend;
+    const remote = normalized.mode === "remote";
+    const nextRemembered = remote && remember && Boolean(key.trim()) && Boolean(encryptionKey.trim());
+    if (isTauri()) await saveDesktopBackend(normalized, remote ? nextRemembered ? key.trim() : null : localApiKey || null, nextRemembered ? encryptionKey.trim() : null);
     else localStorage.setItem(backendSettingsKey, JSON.stringify(normalized));
+    if (previous.mode === "remote" && (normalized.mode !== "remote" || previous.serverUrl !== normalized.serverUrl)) removeStoredCloudCredentials(previous);
     activeBackend = normalized;
-    if (key.trim()) storeApiKey(key, remember, normalized);
-    else {
-      apiKey = loadApiKey(normalized);
-      if (!remember) localStorage.removeItem(persistentApiKeyName(normalized));
+    apiKey = remote ? key.trim() : "";
+    syncKey = remote ? encryptionKey.trim() : "";
+    if (remote) {
+      storeApiKey(apiKey, remember, normalized);
+      sessionStorage.setItem(cloudSyncKey, syncKey);
+      if (remember && !isTauri()) localStorage.setItem(cloudSyncKey, syncKey);
+      else localStorage.removeItem(cloudSyncKey);
+    } else {
+      sessionStorage.removeItem(cloudSyncKey);
+      localStorage.removeItem(cloudSyncKey);
+      apiKey = "";
+      removeStoredCloudCredentials(previous);
     }
     rememberedApiKey = nextRemembered;
   }
@@ -157,9 +208,9 @@ export const backend = {
 export const auth = {
   status: () => request<{ registered: boolean }>("/api/auth/status", {}, false),
   restore: async () => {
-    const response = await fetchApi("/api/auth/session");
+    const response = await fetchLocal("/api/auth/session");
     if (response.status === 401) {
-      clearApiKey();
+      clearLocalApiKey();
       return false;
     }
     if (!response.ok) {
@@ -169,22 +220,24 @@ export const auth = {
     return true;
   },
   signIn: async (email: string, password: string) => {
-    clearApiKey();
+    clearLocalApiKey();
     await request<{ user: { email: string } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, false);
   },
   register: async (email: string, password: string, inviteCode: string) => {
-    clearApiKey();
+    clearLocalApiKey();
     await request<{ user: { email: string } }>("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, inviteCode }) }, false);
   },
   signInWithKey: async (key: string) => {
     const trimmed = key.trim();
     if (!trimmed) throw new Error("请输入访问密钥");
     try {
-      const response = await fetchApi("/api/health", {}, activeBackend, trimmed);
+      const response = await fetchLocal("/api/health", {}, trimmed);
       if (!response.ok) throw new Error("未授权");
-      storeApiKey(trimmed, false);
+      localApiKey = trimmed;
+      sessionStorage.setItem(legacyApiKey, trimmed);
+      sessionStorage.setItem(sessionApiKeyName(defaultBackend), trimmed);
     } catch (error) {
-      clearApiKey();
+      clearLocalApiKey();
       throw error;
     }
   },
@@ -192,9 +245,45 @@ export const auth = {
     try {
       await request<void>("/api/auth/logout", { method: "POST" }, false);
     } finally {
-      clearApiKey();
+      clearLocalApiKey();
     }
   }
+};
+
+export type PortableAccountConfiguration = {
+  syncId: string;
+  name: string;
+  email: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  username: string;
+  password: string;
+  mailbox: string;
+  enabled: boolean;
+  syncUpdatedAt: string;
+};
+
+export type CloudConfigEnvelope = { version: string; iv: string; ciphertext: string };
+export type AccountConfigTombstone = { syncId: string; deletedAt: string };
+
+async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetchCloud(path, options);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: string; currentRevision?: number };
+    const error = new Error(body.error ?? `云配置请求失败 (${response.status})`) as Error & { status?: number; currentRevision?: number };
+    error.status = response.status;
+    error.currentRevision = body.currentRevision;
+    throw error;
+  }
+  return response.json() as Promise<T>;
+}
+
+export const configSyncApi = {
+  cloudBundle: () => cloudRequest<{ revision: number; envelope: CloudConfigEnvelope | null }>("/api/config-bundle"),
+  saveCloudBundle: (baseRevision: number, envelope: CloudConfigEnvelope) => cloudRequest<{ revision: number }>("/api/config-bundle", { method: "PUT", body: JSON.stringify({ baseRevision, envelope }) }),
+  exportLocal: () => request<{ accounts: PortableAccountConfiguration[] }>("/api/config-local/export"),
+  importLocal: (accounts: PortableAccountConfiguration[], tombstones: AccountConfigTombstone[]) => request<{ created: number; updated: number; unchanged: number; stale: number; disabled: number; queued: number }>("/api/config-local/import", { method: "POST", body: JSON.stringify({ accounts, tombstones }) })
 };
 
 export const api = {

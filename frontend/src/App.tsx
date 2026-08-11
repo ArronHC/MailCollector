@@ -12,6 +12,7 @@ import { TopBar } from "./components/TopBar";
 import { Modal, ToastStack, type ToastMessage } from "./components/Ui";
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions, MessageView } from "./data/mailData";
 import { accountSource, sourceNames } from "./data/mailData";
+import { queueAccountConfigDeletion, syncCloudConfiguration } from "./config-sync";
 
 const PAGE_SIZE = 15;
 const REMOTE_REFRESH_MS = 15_000;
@@ -62,7 +63,7 @@ export default function App() {
     };
   }, []);
 
-  const remoteBackend = backend.current().mode === "remote";
+  const remoteBackend = false;
   const content = authState === "checking"
     ? <main className="auth-loading"><strong>Mail Collector</strong><span>{remoteBackend ? "正在连接自托管服务器..." : "正在连接本地邮件空间..."}</span></main>
     : authState === "guest"
@@ -121,7 +122,7 @@ function MailboxApp({ onLogout, onBackendSettings }: { onLogout: () => void; onB
   const activeAccount = accounts.find((account) => account.id === activeAccountId) ?? null;
   const currentBackend = backend.current();
   const remoteMode = currentBackend.mode === "remote";
-  const backendLabel = remoteMode ? `服务器：${new URL(currentBackend.serverUrl).host}` : "本机邮件空间";
+  const backendLabel = remoteMode ? `本机邮件 · 配置同步：${new URL(currentBackend.serverUrl).host}` : "本机邮件空间";
   const unreadCount = accounts.reduce((sum, account) => sum + account.unreadCount, 0);
   function toast(text: string, tone: ToastMessage["tone"] = "success", actionLabel?: string, onAction?: () => void) {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -187,7 +188,7 @@ function MailboxApp({ onLogout, onBackendSettings }: { onLogout: () => void; onB
   });
 
   useEffect(() => {
-    void Promise.all([loadMetadata(), api.providers().then((data) => setProviders(data.providers))]).catch((error) => {
+    void syncCloudConfiguration().catch((error) => { if (backend.current().mode === "remote") setSyncError(error instanceof Error ? error.message : "云配置同步失败"); }).then(() => Promise.all([loadMetadata(), api.providers().then((data) => setProviders(data.providers))])).catch((error) => {
       setListError(error instanceof Error ? error.message : "无法连接服务器");
       setLoading(false);
     });
@@ -215,7 +216,6 @@ function MailboxApp({ onLogout, onBackendSettings }: { onLogout: () => void; onB
   });
 
   useEffect(() => {
-    if (backend.current().mode !== "remote") return;
     const refresh = () => { void refreshRemoteState().catch(() => undefined); };
     const timer = window.setInterval(refresh, REMOTE_REFRESH_MS);
     window.addEventListener("focus", refresh);
@@ -377,15 +377,15 @@ function MailboxApp({ onLogout, onBackendSettings }: { onLogout: () => void; onB
 
   async function addAccount(form: AccountForm) {
     setDialogBusy(true); setDialogError("");
-    try { const { account } = await api.addAccount({ ...form, mailbox: "INBOX" }); await api.syncAccount(account.id); await Promise.all([loadMetadata(), loadMessages()]); setDialogOpen(false); toast("邮箱已添加并完成首次同步"); }
+    try { const { account } = await api.addAccount({ ...form, mailbox: "INBOX" }); await api.syncAccount(account.id); if (remoteMode) await syncCloudConfiguration(); await Promise.all([loadMetadata(), loadMessages()]); setDialogOpen(false); toast(remoteMode ? "邮箱已添加，配置已加密同步" : "邮箱已添加并完成首次同步"); }
     catch (error) { setDialogError(error instanceof Error ? error.message : "添加邮箱失败"); throw error; }
     finally { setDialogBusy(false); }
   }
 
   async function manageAccount(action: "sync" | "toggle" | "delete", account: MailAccount) {
-    if (action === "delete" && !window.confirm(remoteMode ? `确认从服务器删除 ${account.email}？所有设备都会失去该账号及其邮件。` : `确认删除 ${account.email}？本地邮件也会删除。`)) return;
+    if (action === "delete" && !window.confirm(remoteMode ? `确认删除 ${account.email}？本机邮件会被删除，其他设备会停用该账户配置。` : `确认删除 ${account.email}？本地邮件也会删除。`)) return;
     setDialogBusy(true); setDialogError("");
-    try { if (action === "sync") await api.syncAccount(account.id); if (action === "toggle") await api.setAccountEnabled(account.id, !account.enabled); if (action === "delete") await api.deleteAccount(account.id); await Promise.all([loadMetadata(), loadMessages()]); toast(action === "sync" ? "邮箱同步完成" : action === "toggle" ? "账户状态已更新" : "邮箱账户已删除"); }
+    try { if (action === "sync") await api.syncAccount(account.id); if (action === "toggle") await api.setAccountEnabled(account.id, !account.enabled); if (action === "delete") { await api.deleteAccount(account.id); queueAccountConfigDeletion(account.syncId); } if (remoteMode && action !== "sync") await syncCloudConfiguration(); await Promise.all([loadMetadata(), loadMessages()]); toast(action === "sync" ? "邮箱同步完成" : action === "toggle" ? "账户状态及云配置已更新" : "邮箱账户已删除，云配置已更新"); }
     catch (error) { setDialogError(error instanceof Error ? error.message : "账户操作失败"); }
     finally { setDialogBusy(false); }
   }
@@ -403,7 +403,7 @@ function MailboxApp({ onLogout, onBackendSettings }: { onLogout: () => void; onB
     </div>
     <AccountDialog open={dialogOpen} providers={providers} accounts={accounts} busy={dialogBusy} error={dialogError} onClose={() => { setDialogOpen(false); setDialogError(""); }} onSubmit={addAccount} onSync={(account) => manageAccount("sync", account)} onToggle={(account) => manageAccount("toggle", account)} onDelete={(account) => manageAccount("delete", account)} />
     <ComposeDialog open={composeOpen} accounts={accounts} seed={composeSeed} busy={composeBusy} status={composeStatus} onClose={(content, id, discard) => void closeCompose(content, id, discard)} onSend={(content, id) => void sendMessage(content, id)} />
-    <Modal open={helpOpen} title="Mail Collector 帮助" onClose={() => setHelpOpen(false)}><div className="help-content"><p>使用顶部搜索查找发件人、主题和正文内容。勾选邮件后可批量归档、移动、延后或添加标签。</p><p>自动分类会在同步新邮件时运行，也可通过顶部按钮重新分析已有邮件。分类在当前后端完成，并保留手工标签。</p><p>齿轮按钮可切换本机或自托管服务器；双击左侧账户可进入邮箱账户管理。</p><p>快捷提示：双击写信窗口标题可最小化；关闭有内容的写信窗口会自动保存草稿。</p></div></Modal>
+    <Modal open={helpOpen} title="Mail Collector 帮助" onClose={() => setHelpOpen(false)}><div className="help-content"><p>使用顶部搜索查找发件人、主题和正文内容。勾选邮件后可批量归档、移动、延后或添加标签。</p><p>自动分类会在同步新邮件时运行，也可通过顶部按钮重新分析已有邮件。分类和邮件内容始终保存在本机。</p><p>齿轮按钮可启用端到端加密的账户配置同步；云端不会保存邮件正文。</p><p>快捷提示：双击写信窗口标题可最小化；关闭有内容的写信窗口会自动保存草稿。</p></div></Modal>
     <Modal open={labelOpen} title="新建标签" onClose={() => setLabelOpen(false)} className="small-modal"><div className="label-create"><input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} placeholder="标签名称" autoFocus onKeyDown={(event) => { if (event.key === "Enter") void createLabel(); }} /><footer><button onClick={() => setLabelOpen(false)}>取消</button><button className="primary-action" onClick={() => void createLabel()} disabled={!newLabel.trim()}>创建</button></footer></div></Modal>
     <ToastStack toasts={toasts} dismiss={(id) => setToasts((current) => current.filter((item) => item.id !== id))} />
   </div>;

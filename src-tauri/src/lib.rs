@@ -43,6 +43,7 @@ struct ClientBackendSettings {
     mode: String,
     server_url: String,
     api_key: Option<String>,
+    sync_key: Option<String>,
 }
 
 struct SidecarProcess {

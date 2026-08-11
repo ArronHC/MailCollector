@@ -61,6 +61,7 @@ export const config = {
   allowedRemoteOrigins: stringList("ALLOWED_REMOTE_ORIGINS"),
   trustedProxy: process.env.TRUSTED_PROXY?.trim() || "",
   requireHttps: boolean("REQUIRE_HTTPS", false),
+  configSyncOnly: boolean("CONFIG_SYNC_ONLY", false),
   allowPrivateMailHosts: boolean("ALLOW_PRIVATE_MAIL_HOSTS", false),
   syncIntervalMinutes: integer("SYNC_INTERVAL_MINUTES", 5),
   initialSyncLimit: integer("INITIAL_SYNC_LIMIT", 100),

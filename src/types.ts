@@ -1,5 +1,7 @@
 export interface MailAccount {
   id: number;
+  syncId: string;
+  syncUpdatedAt: string;
   name: string;
   email: string;
   host: string;
@@ -29,6 +31,26 @@ export interface PublicMailAccount extends Omit<MailAccount, "encryptedPassword"
   status: "ready" | "syncing" | "error" | "disabled" | "degraded" | "reauth_required" | "backfilling";
   messageCount: number;
   unreadCount: number;
+}
+
+export interface SyncedAccountConfiguration {
+  syncId: string;
+  name: string;
+  email: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  username: string;
+  encryptedPassword: string;
+  mailbox: string;
+  enabled: boolean;
+  syncUpdatedAt: string;
+}
+
+export interface CloudConfigEnvelope {
+  version: string;
+  iv: string;
+  ciphertext: string;
 }
 
 export interface ParsedMessage {

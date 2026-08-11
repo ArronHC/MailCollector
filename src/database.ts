@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { classifyMail, type AutoCategory, type ClassifiableMessage } from "./mail-classifier.js";
 import { inferProvider } from "./providers.js";
 import type {
   BackfillResult,
+  CloudConfigEnvelope,
   DraftInput,
   LocalMessageContent,
   MailAccount,
@@ -16,11 +18,14 @@ import type {
   MailOperationType,
   ParsedMessage,
   PublicMailAccount,
+  SyncedAccountConfiguration,
   SyncResult
 } from "./types.js";
 
 type AccountRow = {
   id: number;
+  sync_id: string;
+  sync_updated_at: string;
   name: string;
   email: string;
   host: string;
@@ -45,6 +50,19 @@ type AccountRow = {
   backfill_status: MailAccount["backfillStatus"];
   created_at: string;
 };
+
+export type SyncedAccountUpsertResult = {
+  account: MailAccount;
+  status: "created" | "updated" | "unchanged" | "stale";
+  connectionChanged: boolean;
+};
+
+export type ConfigBundle = {
+  revision: number;
+  envelope: CloudConfigEnvelope | null;
+};
+
+const MAX_CONFIG_BUNDLE_BYTES = 512 * 1024;
 
 export type MailJobType = "initial" | "incremental" | "reconcile" | "backfill" | "operation";
 
@@ -145,6 +163,8 @@ export class MailDatabase {
 
       CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_id TEXT NOT NULL,
+        sync_updated_at TEXT NOT NULL,
         name TEXT NOT NULL,
         email TEXT NOT NULL,
         host TEXT NOT NULL,
@@ -234,6 +254,8 @@ export class MailDatabase {
     }
 
     this.addColumnIfMissing("accounts", "uid_validity", "TEXT");
+    this.addColumnIfMissing("accounts", "sync_id", "TEXT");
+    this.addColumnIfMissing("accounts", "sync_updated_at", "TEXT");
     this.addColumnIfMissing("accounts", "provider", "TEXT NOT NULL DEFAULT 'imap'");
     this.addColumnIfMissing("accounts", "last_successful_sync_at", "TEXT");
     this.addColumnIfMissing("accounts", "last_reconcile_at", "TEXT");
@@ -328,6 +350,14 @@ export class MailDatabase {
     `);
     this.addColumnIfMissing("messages", "auto_label_id", "INTEGER REFERENCES labels(id)");
     this.addColumnIfMissing("mail_operations", "uid_validity", "TEXT NOT NULL DEFAULT ''");
+    const accountSyncMetadata = this.db.prepare("SELECT id, sync_id AS syncId, sync_updated_at AS syncUpdatedAt, created_at AS createdAt FROM accounts").all() as Array<{ id: number; syncId: string | null; syncUpdatedAt: string | null; createdAt: string }>;
+    const updateSyncMetadata = this.db.prepare("UPDATE accounts SET sync_id = ?, sync_updated_at = ? WHERE id = ?");
+    for (const account of accountSyncMetadata) {
+      const timestamp = account.syncUpdatedAt || account.createdAt;
+      const explicitTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(timestamp) ? `${timestamp.replace(" ", "T")}Z` : timestamp;
+      const parsedTimestamp = Date.parse(explicitTimestamp);
+      updateSyncMetadata.run(account.syncId || crypto.randomUUID(), Number.isFinite(parsedTimestamp) ? new Date(parsedTimestamp).toISOString() : new Date().toISOString(), account.id);
+    }
     this.db.prepare("UPDATE accounts SET provider = CASE WHEN lower(host) = 'imap.gmail.com' THEN 'gmail' WHEN lower(host) = 'outlook.office365.com' THEN 'microsoft' ELSE 'imap' END WHERE provider = 'imap'").run();
     this.db.prepare("UPDATE messages SET body_status = 'fetched' WHERE body_status = 'complete'").run();
     this.db.prepare("UPDATE messages SET body_status = 'failed' WHERE body_status IN ('too_large', 'parse_error')").run();
@@ -356,9 +386,18 @@ export class MailDatabase {
       CREATE INDEX IF NOT EXISTS messages_kind_idx ON messages(kind, received_at DESC);
       CREATE INDEX IF NOT EXISTS messages_snoozed_until_idx ON messages(snoozed_until);
       CREATE UNIQUE INDEX IF NOT EXISTS messages_provider_id_idx ON messages(account_id, provider_message_id) WHERE provider_message_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS accounts_sync_id_idx ON accounts(sync_id);
+
+      CREATE TABLE IF NOT EXISTS cloud_config_bundle (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        revision INTEGER NOT NULL CHECK(revision > 0),
+        envelope TEXT NOT NULL CHECK(length(CAST(envelope AS BLOB)) <= 524288),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
     `);
     this.db.prepare("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (1, 'reliable_mail_sync')").run();
     this.db.prepare("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (2, 'uidvalidity_message_identity')").run();
+    this.db.prepare("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (3, 'cloud_config_sync')").run();
   }
 
   private addColumnIfMissing(table: "accounts" | "messages" | "mail_operations", column: string, definition: string): void {
@@ -435,14 +474,17 @@ export class MailDatabase {
   }
 
   createAccount(input: Omit<MailAccount,
-    "id" | "provider" | "uidValidity" | "lastUid" | "lastSyncAt" | "lastSuccessfulSyncAt" |
+    "id" | "syncId" | "syncUpdatedAt" | "provider" | "uidValidity" | "lastUid" | "lastSyncAt" | "lastSuccessfulSyncAt" |
     "lastReconcileAt" | "lastEventAt" | "lastError" | "syncErrorCount" | "syncState" |
     "nextSyncAt" | "backfillCursor" | "backfillStatus" | "createdAt"
-  > & { provider?: MailAccount["provider"] }): MailAccount {
+  > & { syncId?: string; syncUpdatedAt?: string; provider?: MailAccount["provider"] }): MailAccount {
+    const syncId = input.syncId ?? crypto.randomUUID();
+    const syncUpdatedAt = input.syncUpdatedAt ?? new Date().toISOString();
+    this.assertSyncTimestamp(syncUpdatedAt);
     const result = this.db.prepare(`
-      INSERT INTO accounts (name, email, host, port, secure, username, encrypted_password, mailbox, provider, enabled)
-      VALUES (@name, @email, @host, @port, @secure, @username, @encryptedPassword, @mailbox, @provider, @enabled)
-    `).run({ ...input, provider: input.provider ?? inferProvider(input.host), secure: Number(input.secure), enabled: Number(input.enabled) });
+      INSERT INTO accounts (sync_id, sync_updated_at, name, email, host, port, secure, username, encrypted_password, mailbox, provider, enabled)
+      VALUES (@syncId, @syncUpdatedAt, @name, @email, @host, @port, @secure, @username, @encryptedPassword, @mailbox, @provider, @enabled)
+    `).run({ ...input, syncId, syncUpdatedAt, provider: input.provider ?? inferProvider(input.host), secure: Number(input.secure), enabled: Number(input.enabled) });
     return this.getAccount(Number(result.lastInsertRowid))!;
   }
 
@@ -451,9 +493,118 @@ export class MailDatabase {
     return row ? this.mapAccount(row) : null;
   }
 
+  getAccountBySyncId(syncId: string): MailAccount | null {
+    const row = this.db.prepare("SELECT * FROM accounts WHERE sync_id = ?").get(syncId) as AccountRow | undefined;
+    return row ? this.mapAccount(row) : null;
+  }
+
   listAccounts(): MailAccount[] {
     return (this.db.prepare("SELECT * FROM accounts ORDER BY created_at DESC, id DESC").all() as AccountRow[])
       .map((row) => this.mapAccount(row));
+  }
+
+  upsertSyncedAccount(input: SyncedAccountConfiguration): SyncedAccountUpsertResult {
+    this.assertSyncTimestamp(input.syncUpdatedAt);
+    const transaction = this.db.transaction((): SyncedAccountUpsertResult => {
+      const existing = this.getAccountBySyncId(input.syncId);
+      if (!existing) {
+        return {
+          account: this.createAccount({ ...input, provider: inferProvider(input.host) }),
+          status: "created",
+          connectionChanged: true
+        };
+      }
+
+      const incomingTime = Date.parse(input.syncUpdatedAt);
+      const existingTime = Date.parse(existing.syncUpdatedAt);
+      const sameConfiguration = this.syncedAccountMatches(existing, input);
+      if (incomingTime <= existingTime) {
+        return {
+          account: existing,
+          status: incomingTime === existingTime && sameConfiguration ? "unchanged" : "stale",
+          connectionChanged: false
+        };
+      }
+
+      const connectionChanged = existing.host !== input.host
+        || existing.port !== input.port
+        || existing.secure !== input.secure
+        || existing.username !== input.username
+        || existing.mailbox !== input.mailbox
+        || existing.email !== input.email;
+      this.db.prepare(`
+        UPDATE accounts SET sync_updated_at = @syncUpdatedAt, name = @name, email = @email,
+          host = @host, port = @port, secure = @secure, username = @username,
+          encrypted_password = @encryptedPassword, mailbox = @mailbox, provider = @provider,
+          enabled = @enabled,
+          lease_owner = CASE WHEN @enabled = 0 THEN NULL ELSE lease_owner END,
+          lease_expires_at = CASE WHEN @enabled = 0 THEN NULL ELSE lease_expires_at END
+        WHERE id = @id
+      `).run({ ...input, id: existing.id, provider: inferProvider(input.host), secure: Number(input.secure), enabled: Number(input.enabled) });
+
+      if (connectionChanged) {
+        this.db.prepare(`
+          UPDATE accounts SET uid_validity = NULL, last_uid = 0, last_sync_at = NULL,
+            last_successful_sync_at = NULL, last_reconcile_at = NULL, last_event_at = NULL,
+            last_error = NULL, sync_error_count = 0, sync_state = 'idle', next_sync_at = NULL,
+            backfill_cursor = NULL, backfill_status = 'pending', lease_owner = NULL, lease_expires_at = NULL
+          WHERE id = ?
+        `).run(existing.id);
+        this.db.prepare("DELETE FROM mail_jobs WHERE account_id = ?").run(existing.id);
+        this.db.prepare(`
+          UPDATE mail_operations SET status = 'failed', last_error = '邮箱连接配置已变更，旧操作已取消',
+            lease_owner = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+          WHERE account_id = ? AND status IN ('pending', 'processing')
+        `).run(existing.id);
+      }
+
+      return {
+        account: this.getAccount(existing.id)!,
+        status: "updated",
+        connectionChanged
+      };
+    });
+    return transaction();
+  }
+
+  applyAccountTombstone(syncId: string, tombstoneAt: string): "applied" | "stale" | "missing" {
+    this.assertSyncTimestamp(tombstoneAt);
+    const transaction = this.db.transaction(() => {
+      const existing = this.getAccountBySyncId(syncId);
+      if (!existing) return "missing" as const;
+      if (Date.parse(tombstoneAt) <= Date.parse(existing.syncUpdatedAt)) return "stale" as const;
+      this.db.prepare(`
+        UPDATE accounts SET enabled = 0, sync_updated_at = ?, lease_owner = NULL, lease_expires_at = NULL
+        WHERE id = ?
+      `).run(tombstoneAt, existing.id);
+      this.db.prepare("DELETE FROM mail_jobs WHERE account_id = ?").run(existing.id);
+      return "applied" as const;
+    });
+    return transaction();
+  }
+
+  getConfigBundle(): ConfigBundle {
+    const row = this.db.prepare("SELECT revision, envelope FROM cloud_config_bundle WHERE id = 1").get() as { revision: number; envelope: string } | undefined;
+    return row ? { revision: row.revision, envelope: JSON.parse(row.envelope) as CloudConfigEnvelope } : { revision: 0, envelope: null };
+  }
+
+  compareAndSwapConfigBundle(baseRevision: number, envelope: CloudConfigEnvelope): { ok: true; revision: number } | { ok: false; currentRevision: number } {
+    const serialized = JSON.stringify(envelope);
+    if (Buffer.byteLength(serialized) > MAX_CONFIG_BUNDLE_BYTES) throw new Error("配置包超过 512KB 限制");
+    if (baseRevision === 0) {
+      const result = this.db.prepare(`
+        INSERT INTO cloud_config_bundle (id, revision, envelope) VALUES (1, 1, ?)
+        ON CONFLICT(id) DO NOTHING
+      `).run(serialized);
+      if (result.changes) return { ok: true, revision: 1 };
+    } else {
+      const result = this.db.prepare(`
+        UPDATE cloud_config_bundle SET revision = revision + 1, envelope = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = 1 AND revision = ?
+      `).run(serialized, baseRevision);
+      if (result.changes) return { ok: true, revision: baseRevision + 1 };
+    }
+    return { ok: false, currentRevision: this.getConfigBundle().revision };
   }
 
   listPublicAccounts(syncingIds: Set<number>): PublicMailAccount[] {
@@ -484,11 +635,11 @@ export class MailDatabase {
 
   setAccountEnabled(id: number, enabled: boolean): void {
     this.db.prepare(`
-      UPDATE accounts SET enabled = ?,
+      UPDATE accounts SET enabled = ?, sync_updated_at = ?,
         lease_owner = CASE WHEN ? = 0 THEN NULL ELSE lease_owner END,
         lease_expires_at = CASE WHEN ? = 0 THEN NULL ELSE lease_expires_at END
       WHERE id = ?
-    `).run(Number(enabled), Number(enabled), Number(enabled), id);
+    `).run(Number(enabled), new Date().toISOString(), Number(enabled), Number(enabled), id);
   }
 
   markSyncError(id: number, error: string): void {
@@ -1322,9 +1473,28 @@ export class MailDatabase {
     return body.replace(/\s+/g, " ").trim().slice(0, 240);
   }
 
+  private assertSyncTimestamp(value: string): void {
+    if (!Number.isFinite(Date.parse(value))) throw new Error("同步时间无效");
+  }
+
+  private syncedAccountMatches(account: MailAccount, input: SyncedAccountConfiguration): boolean {
+    return account.syncId === input.syncId
+      && account.name === input.name
+      && account.email === input.email
+      && account.host === input.host
+      && account.port === input.port
+      && account.secure === input.secure
+      && account.username === input.username
+      && account.encryptedPassword === input.encryptedPassword
+      && account.mailbox === input.mailbox
+      && account.enabled === input.enabled;
+  }
+
   private mapAccount(row: AccountRow): MailAccount {
     return {
       id: row.id,
+      syncId: row.sync_id,
+      syncUpdatedAt: row.sync_updated_at,
       name: row.name,
       email: row.email,
       host: row.host,
