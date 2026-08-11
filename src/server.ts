@@ -8,6 +8,8 @@ import { config } from "./config.js";
 import { encryptSecret } from "./crypto.js";
 import { MailDatabase } from "./database.js";
 import { ImapMailSyncer } from "./imap-syncer.js";
+import { ImapIdleService } from "./imap-idle-service.js";
+import { MailWorker } from "./mail-worker.js";
 import { providers } from "./providers.js";
 import { SmtpSender } from "./smtp-sender.js";
 import { SyncService } from "./sync-service.js";
@@ -78,7 +80,23 @@ const loginSchema = z.object({ email: emailSchema, password: passwordSchema });
 
 const database = new MailDatabase(config.databasePath);
 const syncer = new ImapMailSyncer(config.encryptionKey, config.allowPrivateMailHosts);
-const syncService = new SyncService(database, syncer, config.initialSyncLimit, config.maxMessageBytes);
+const syncService = new SyncService(database, syncer, config.initialSyncLimit, config.maxMessageBytes, {
+  backfillPageSize: config.backfillPageSize,
+  reconcileLimit: config.reconcileMessageLimit,
+  leaseMs: config.syncLeaseSeconds * 1000,
+  maxAttempts: config.providerMaxAttempts,
+  activeReconcileMinutes: config.activeReconcileMinutes,
+  normalReconcileMinutes: config.normalReconcileMinutes,
+  inactiveReconcileMinutes: config.inactiveReconcileMinutes,
+  providerConcurrency: config.providerMaxConcurrency
+});
+const mailWorker = new MailWorker(database, syncService, config.syncLeaseSeconds * 1000);
+const idleService = config.imapIdleEnabled ? new ImapIdleService(database, syncService, syncer, {
+  scanIntervalMs: config.imapIdleScanSeconds * 1000,
+  debounceMs: config.imapIdleDebounceMs,
+  reconnectMaxMs: config.imapIdleReconnectMaxSeconds * 1000,
+  startupConcurrency: config.providerMaxConcurrency
+}) : null;
 const smtpSender = new SmtpSender(config.encryptionKey);
 const app = express();
 const sessionCookieName = "mail_collector_session";
@@ -272,11 +290,20 @@ app.post("/api/accounts", async (request, response, next) => {
       username: input.username,
       encryptedPassword: encryptSecret(input.password, config.encryptionKey),
       mailbox: input.mailbox,
+      provider: input.host.toLowerCase() === "imap.gmail.com" ? "gmail" as const : input.host.toLowerCase() === "outlook.office365.com" ? "microsoft" as const : "imap" as const,
       enabled: true,
       uidValidity: null,
       lastUid: 0,
       lastSyncAt: null,
+      lastSuccessfulSyncAt: null,
+      lastReconcileAt: null,
+      lastEventAt: null,
       lastError: null,
+      syncErrorCount: 0,
+      syncState: "idle" as const,
+      nextSyncAt: null,
+      backfillCursor: null,
+      backfillStatus: "pending" as const,
       createdAt: new Date().toISOString()
     };
     await syncer.testConnection(candidate);
@@ -289,8 +316,11 @@ app.post("/api/accounts", async (request, response, next) => {
       username: candidate.username,
       encryptedPassword: candidate.encryptedPassword,
       mailbox: candidate.mailbox,
+      provider: candidate.provider,
       enabled: candidate.enabled
     });
+    database.enqueueJob(account.id, "initial", 1, "account_created");
+    idleService?.refresh();
     response.status(201).json({ account: database.listPublicAccounts(syncService.syncingIds).find((item) => item.id === account.id) });
   } catch (error) {
     next(error);
@@ -303,6 +333,8 @@ app.patch("/api/accounts/:id", (request, response, next) => {
     const enabled = z.object({ enabled: z.boolean() }).parse(request.body).enabled;
     if (!database.getAccount(id)) return response.status(404).json({ error: "邮箱不存在" });
     database.setAccountEnabled(id, enabled);
+    if (enabled) syncService.triggerAccount(id, "account_reenabled");
+    idleService?.refresh();
     response.json({ ok: true });
   } catch (error) {
     next(error);
@@ -314,6 +346,7 @@ app.delete("/api/accounts/:id", (request, response, next) => {
     const id = z.coerce.number().int().positive().parse(request.params.id);
     if (syncService.syncingIds.has(id)) return response.status(409).json({ error: "邮箱正在同步，请稍后删除" });
     if (!database.deleteAccount(id)) return response.status(404).json({ error: "邮箱不存在" });
+    idleService?.refresh();
     response.status(204).end();
   } catch (error) {
     next(error);
@@ -324,6 +357,17 @@ app.post("/api/accounts/:id/sync", async (request, response, next) => {
   try {
     const id = z.coerce.number().int().positive().parse(request.params.id);
     response.json(await syncService.syncAccount(id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/accounts/:id/sync-events", (request, response, next) => {
+  try {
+    const id = z.coerce.number().int().positive().parse(request.params.id);
+    if (!database.getAccount(id)) return response.status(404).json({ error: "邮箱不存在" });
+    syncService.triggerAccount(id, "provider_event");
+    response.status(202).json({ queued: true });
   } catch (error) {
     next(error);
   }
@@ -367,11 +411,15 @@ app.get("/api/messages", (request, response, next) => {
   }
 });
 
-app.get("/api/messages/:id", (request, response, next) => {
+app.get("/api/messages/:id", async (request, response, next) => {
   try {
     const id = z.coerce.number().int().positive().parse(request.params.id);
-    const message = database.getMessage(id);
+    let message = database.getMessage(id) as { bodyStatus?: string } | null;
     if (!message) return response.status(404).json({ error: "邮件不存在" });
+    if (message.bodyStatus === "not_fetched" || message.bodyStatus === "failed") {
+      await syncService.fetchMessageBody(id).catch((error) => console.error(error));
+      message = database.getMessage(id) as { bodyStatus?: string } | null;
+    }
     response.json({ message });
   } catch (error) {
     next(error);
@@ -493,7 +541,7 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
   const message = error instanceof Error ? error.message : "服务器错误";
   console.error(error);
   const status = message.includes("不存在") ? 404
-    : message.includes("正在同步") || message.includes("已存在") ? 409
+    : message.includes("正在同步") || message.includes("已存在") || message.includes("已停用") ? 409
     : message.includes("不支持 IMAP 主机") || message.includes("不允许连接") || message.includes("没有可用地址") ? 400
     : 500;
   response.status(status).json({ error: status === 500 ? "服务器错误" : message });
@@ -503,26 +551,29 @@ export const server = app.listen(config.port, config.host, () => {
   console.log(`Mail Collector is running at http://${config.host}:${config.port}`);
 });
 
-const timer = setInterval(() => void syncService.syncAll(), config.syncIntervalMinutes * 60_000);
-timer.unref();
+syncService.scheduleDueAccounts();
+idleService?.start();
+const schedulerTimer = setInterval(() => syncService.scheduleDueAccounts(), config.syncIntervalMinutes * 60_000);
+schedulerTimer.unref();
+const workerTimer = setInterval(() => void mailWorker.drain(), config.workerIntervalSeconds * 1000);
+workerTimer.unref();
+void mailWorker.drain();
 
 let closePromise: Promise<void> | null = null;
 
 export function closeServer(): Promise<void> {
   if (closePromise) return closePromise;
-  closePromise = new Promise((resolve, reject) => {
-    clearInterval(timer);
-    server.close((error) => {
-      try {
-        database.close();
-      } catch (closeError) {
-        reject(closeError);
-        return;
-      }
-      if (error) reject(error);
-      else resolve();
+  closePromise = (async () => {
+    clearInterval(schedulerTimer);
+    clearInterval(workerTimer);
+    await idleService?.stop();
+    syncService.stop();
+    await mailWorker.stop();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
     });
-  });
+    database.close();
+  })();
   return closePromise;
 }
 

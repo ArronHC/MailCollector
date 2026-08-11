@@ -71,7 +71,7 @@ npm run dist:win
 ## 安全与边界
 
 - SMTP 根据 IMAP 主机映射：Gmail、QQ、163、126 使用 465 TLS，Outlook 和 iCloud 使用 587 STARTTLS。自定义 IMAP 主机在没有明确映射时拒绝发送。
-- 删除本地邮件不会通过 IMAP 删除源邮箱邮件；移动、标签、稍后提醒和永久删除均为本地状态。
+- 已读/未读和星标使用持久化 operation outbox 异步写回 IMAP；移动、标签、稍后提醒和永久删除仍保持本地语义，避免在未可靠发现远端文件夹时执行破坏性操作。
 - `ENCRYPTION_KEY` 丢失后，已保存的邮箱凭据无法解密；不要随意更换。
 - `REGISTRATION_INVITE_CODE` 为首次注册邀请码，至少 12 个字符；当前本地环境的邀请码为 `MC-2026-7F4K9Q2P`，注册成功后系统会关闭新账户注册。
 - `API_KEY` 为必填项且至少 24 个字符，用于保护接口，也可继续作为兼容登录方式。
@@ -79,8 +79,19 @@ npm run dist:win
 - 服务默认只监听 `127.0.0.1`。需要通过容器或反向代理访问时，可将 `HOST` 改为 `0.0.0.0`，并配置 HTTPS。
 - 自定义 IMAP 主机默认不能解析到回环、私网、链路本地或保留地址。如确需连接内网邮件服务器，可显式设置 `ALLOW_PRIVATE_MAIL_HOSTS=true`。
 - 本项目适合单用户自托管。公网部署应放在 HTTPS 反向代理后，并进一步增加审计、密码恢复和密钥托管。
-- 同步完整邮件时 IMAP 仍会传输邮件内的附件数据，但附件内容不会写入数据库或提供下载；超出 `MAX_MESSAGE_BYTES` 的邮件只保存 envelope 元数据。后续版本应改为按 MIME part 下载正文，进一步降低带附件邮件的网络和内存开销。
-- 源邮箱删除或移动邮件目前不会删除本地副本，当前语义更接近本地聚合归档。
+- 核心同步仅拉取 metadata。用户打开邮件时才下载并缓存完整 MIME 正文；此时仍会传输附件数据，但附件内容不会写入数据库或提供下载。超出 `MAX_MESSAGE_BYTES` 的正文会标记为失败并保留 metadata。
+- 周期 reconciliation 会在配置的近期窗口内把源邮箱缺失邮件标记为 provider tombstone，不会立即物理删除；本地永久删除使用独立 tombstone，后续同步不会让它重新出现。
+
+## 同步架构
+
+- Provider event/API trigger 只写入 SQLite 持久化队列，不直接修改邮件状态。
+- 启用 `IMAP_IDLE_ENABLED` 时，每个可用账号保持一个可恢复的 IDLE watcher；`exists`、`expunge`、`flags` 事件经 debounce 后只触发增量同步。服务器不支持 IDLE 时 ImapFlow 自动使用 NOOP fallback。
+- 同账号任务通过带过期时间的数据库租约串行执行，不同账号由 Worker 并行处理。
+- Provider 请求通过独立并发门控，默认同一 Provider 最多并发 3 个请求。
+- 首次同步先保存最近 `INITIAL_SYNC_LIMIT` 封 metadata，随后用低优先级分页 backfill 继续历史邮件。
+- 增量批次在同一 SQLite transaction 中完成 message UPSERT、flags/reconciliation 和 cursor 推进。
+- `SYNC_INTERVAL_MINUTES` 是调度扫描周期；账号实际 reconciliation 周期由 active/normal/inactive 配置自适应决定。
+- Gmail 和 Microsoft 账号当前仍通过通用 IMAP Adapter 工作；数据库和 Provider 接口已预留独立 adapter/cursor/subscription 扩展点，但尚未接入 Gmail History API、Microsoft Graph、OAuth 或云端 webhook。
 
 ## 后端 API
 
@@ -96,5 +107,5 @@ npm run dist:win
 1. Gmail OAuth 2.0 与 Microsoft OAuth 2.0，避免保存应用密码并兼容企业租户。
 2. 多用户体系，让每位用户只能访问自己的邮箱与邮件。
 3. 附件按需下载、文件类型校验和对象存储。
-4. IMAP IDLE 或任务队列，实现更低延迟和更可靠的后台同步。
+4. Gmail Pub/Sub 和 Microsoft Graph webhook/subscription，替代对应账号的 IMAP IDLE。
 5. 邮件线程、过滤规则和更完整的本地搜索索引。

@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { classifyMail, type AutoCategory, type ClassifiableMessage } from "./mail-classifier.js";
+import { inferProvider } from "./providers.js";
 import type {
+  BackfillResult,
   DraftInput,
   LocalMessageContent,
   MailAccount,
@@ -10,6 +12,8 @@ import type {
   MessageKind,
   MessageLabel,
   MessageView,
+  MailOperation,
+  MailOperationType,
   ParsedMessage,
   PublicMailAccount,
   SyncResult
@@ -25,13 +29,40 @@ type AccountRow = {
   username: string;
   encrypted_password: string;
   mailbox: string;
+  provider: "gmail" | "microsoft" | "imap";
   enabled: number;
   uid_validity: string | null;
   last_uid: number;
   last_sync_at: string | null;
+  last_successful_sync_at: string | null;
+  last_reconcile_at: string | null;
+  last_event_at: string | null;
   last_error: string | null;
+  sync_error_count: number;
+  sync_state: MailAccount["syncState"];
+  next_sync_at: string | null;
+  backfill_cursor: number | null;
+  backfill_status: MailAccount["backfillStatus"];
   created_at: string;
 };
+
+export type MailJobType = "initial" | "incremental" | "reconcile" | "backfill" | "operation";
+
+export type MailJob = {
+  id: number;
+  accountId: number;
+  type: MailJobType;
+  priority: number;
+  reason: string;
+  attempts: number;
+  maxAttempts: number;
+};
+
+function normalizeBodyStatus(status: string): string {
+  if (status === "complete") return "fetched";
+  if (status === "too_large" || status === "parse_error") return "failed";
+  return status;
+}
 
 type AppUserRow = {
   id: number;
@@ -57,6 +88,7 @@ export class MailDatabase {
     this.db = new Database(databasePath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
+    this.db.pragma("busy_timeout = 5000");
     this.migrate();
   }
 
@@ -105,6 +137,12 @@ export class MailDatabase {
 
   private migrate(): void {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -115,11 +153,22 @@ export class MailDatabase {
         username TEXT NOT NULL,
         encrypted_password TEXT NOT NULL,
         mailbox TEXT NOT NULL DEFAULT 'INBOX',
+        provider TEXT NOT NULL DEFAULT 'imap',
         enabled INTEGER NOT NULL DEFAULT 1,
         uid_validity TEXT,
         last_uid INTEGER NOT NULL DEFAULT 0,
         last_sync_at TEXT,
+        last_successful_sync_at TEXT,
+        last_reconcile_at TEXT,
+        last_event_at TEXT,
         last_error TEXT,
+        sync_error_count INTEGER NOT NULL DEFAULT 0,
+        sync_state TEXT NOT NULL DEFAULT 'idle',
+        next_sync_at TEXT,
+        backfill_cursor INTEGER,
+        backfill_status TEXT NOT NULL DEFAULT 'pending',
+        lease_owner TEXT,
+        lease_expires_at TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -127,6 +176,8 @@ export class MailDatabase {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
         uid INTEGER NOT NULL,
+        uid_validity TEXT,
+        provider_message_id TEXT,
         message_id TEXT,
         subject TEXT NOT NULL DEFAULT '',
         from_name TEXT,
@@ -140,15 +191,19 @@ export class MailDatabase {
         is_read INTEGER NOT NULL DEFAULT 1,
         is_starred INTEGER NOT NULL DEFAULT 0,
         size INTEGER NOT NULL DEFAULT 0,
-        body_status TEXT NOT NULL DEFAULT 'complete',
+        body_status TEXT NOT NULL DEFAULT 'fetched',
         body_error TEXT,
+        body_retryable INTEGER NOT NULL DEFAULT 1,
+        body_fetch_started_at TEXT,
+        provider_deleted INTEGER NOT NULL DEFAULT 0,
+        local_deleted INTEGER NOT NULL DEFAULT 0,
+        deleted_at TEXT,
         folder TEXT NOT NULL DEFAULT 'inbox' CHECK(folder IN ('inbox', 'archive', 'trash', 'spam')),
         snoozed_until TEXT,
         kind TEXT NOT NULL DEFAULT 'received' CHECK(kind IN ('received', 'draft', 'sent')),
         cc_text TEXT,
         bcc_text TEXT,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(account_id, uid)
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE INDEX IF NOT EXISTS messages_received_at_idx ON messages(received_at DESC);
@@ -179,6 +234,19 @@ export class MailDatabase {
     }
 
     this.addColumnIfMissing("accounts", "uid_validity", "TEXT");
+    this.addColumnIfMissing("accounts", "provider", "TEXT NOT NULL DEFAULT 'imap'");
+    this.addColumnIfMissing("accounts", "last_successful_sync_at", "TEXT");
+    this.addColumnIfMissing("accounts", "last_reconcile_at", "TEXT");
+    this.addColumnIfMissing("accounts", "last_event_at", "TEXT");
+    this.addColumnIfMissing("accounts", "sync_error_count", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing("accounts", "sync_state", "TEXT NOT NULL DEFAULT 'idle'");
+    this.addColumnIfMissing("accounts", "next_sync_at", "TEXT");
+    this.addColumnIfMissing("accounts", "backfill_cursor", "INTEGER");
+    this.addColumnIfMissing("accounts", "backfill_status", "TEXT NOT NULL DEFAULT 'pending'");
+    this.addColumnIfMissing("accounts", "lease_owner", "TEXT");
+    this.addColumnIfMissing("accounts", "lease_expires_at", "TEXT");
+    this.addColumnIfMissing("messages", "provider_message_id", "TEXT");
+    this.addColumnIfMissing("messages", "uid_validity", "TEXT");
     this.addColumnIfMissing("messages", "body_status", "TEXT NOT NULL DEFAULT 'complete'");
     this.addColumnIfMissing("messages", "body_error", "TEXT");
     this.addColumnIfMissing("messages", "is_read", "INTEGER NOT NULL DEFAULT 1");
@@ -188,6 +256,11 @@ export class MailDatabase {
     this.addColumnIfMissing("messages", "kind", "TEXT NOT NULL DEFAULT 'received'");
     this.addColumnIfMissing("messages", "cc_text", "TEXT");
     this.addColumnIfMissing("messages", "bcc_text", "TEXT");
+    this.addColumnIfMissing("messages", "provider_deleted", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing("messages", "local_deleted", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing("messages", "body_retryable", "INTEGER NOT NULL DEFAULT 1");
+    this.addColumnIfMissing("messages", "body_fetch_started_at", "TEXT");
+    this.addColumnIfMissing("messages", "deleted_at", "TEXT");
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS labels (
@@ -207,24 +280,169 @@ export class MailDatabase {
       CREATE INDEX IF NOT EXISTS messages_kind_idx ON messages(kind, received_at DESC);
       CREATE INDEX IF NOT EXISTS messages_snoozed_until_idx ON messages(snoozed_until);
       CREATE INDEX IF NOT EXISTS message_labels_label_id_idx ON message_labels(label_id, message_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS messages_provider_id_idx ON messages(account_id, provider_message_id) WHERE provider_message_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS mail_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        priority INTEGER NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'scheduled',
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5,
+        run_after TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        rerun_requested INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(account_id, type)
+      );
+
+      CREATE INDEX IF NOT EXISTS mail_jobs_ready_idx ON mail_jobs(status, run_after, priority, id);
+
+      CREATE TABLE IF NOT EXISTS mail_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        uid INTEGER NOT NULL,
+        uid_validity TEXT NOT NULL DEFAULT '',
+        operation TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 8,
+        next_retry_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS mail_operations_ready_idx ON mail_operations(status, next_retry_at, id);
 
       INSERT OR IGNORE INTO labels (name, built_in) VALUES ('工作', 1), ('个人', 1), ('订阅', 1);
     `);
     this.addColumnIfMissing("messages", "auto_label_id", "INTEGER REFERENCES labels(id)");
+    this.addColumnIfMissing("mail_operations", "uid_validity", "TEXT NOT NULL DEFAULT ''");
+    this.db.prepare("UPDATE accounts SET provider = CASE WHEN lower(host) = 'imap.gmail.com' THEN 'gmail' WHEN lower(host) = 'outlook.office365.com' THEN 'microsoft' ELSE 'imap' END WHERE provider = 'imap'").run();
+    this.db.prepare("UPDATE messages SET body_status = 'fetched' WHERE body_status = 'complete'").run();
+    this.db.prepare("UPDATE messages SET body_status = 'failed' WHERE body_status IN ('too_large', 'parse_error')").run();
+    this.db.prepare(`
+      UPDATE messages SET provider_message_id = (
+        SELECT accounts.mailbox || ':' || COALESCE(accounts.uid_validity, 'legacy') || ':' || messages.uid
+        FROM accounts WHERE accounts.id = messages.account_id
+      ) WHERE provider_message_id IS NULL AND kind = 'received'
+    `).run();
+    this.db.prepare(`
+      UPDATE messages SET uid_validity = (
+        SELECT accounts.uid_validity FROM accounts WHERE accounts.id = messages.account_id
+      ) WHERE uid_validity IS NULL AND kind = 'received'
+    `).run();
+    this.rebuildLegacyMessageIdentity();
+    this.db.prepare(`
+      UPDATE mail_operations SET uid_validity = (
+        SELECT messages.uid_validity FROM messages WHERE messages.id = mail_operations.message_id
+      ) WHERE uid_validity = ''
+    `).run();
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS messages_received_at_idx ON messages(received_at DESC);
+      CREATE INDEX IF NOT EXISTS messages_account_id_idx ON messages(account_id);
+      CREATE INDEX IF NOT EXISTS messages_account_uid_idx ON messages(account_id, uid_validity, uid);
+      CREATE INDEX IF NOT EXISTS messages_folder_idx ON messages(folder, received_at DESC);
+      CREATE INDEX IF NOT EXISTS messages_kind_idx ON messages(kind, received_at DESC);
+      CREATE INDEX IF NOT EXISTS messages_snoozed_until_idx ON messages(snoozed_until);
+      CREATE UNIQUE INDEX IF NOT EXISTS messages_provider_id_idx ON messages(account_id, provider_message_id) WHERE provider_message_id IS NOT NULL;
+    `);
+    this.db.prepare("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (1, 'reliable_mail_sync')").run();
+    this.db.prepare("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (2, 'uidvalidity_message_identity')").run();
   }
 
-  private addColumnIfMissing(table: "accounts" | "messages", column: string, definition: string): void {
+  private addColumnIfMissing(table: "accounts" | "messages" | "mail_operations", column: string, definition: string): void {
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
     if (!columns.some((item) => item.name === column)) {
       this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
   }
 
-  createAccount(input: Omit<MailAccount, "id" | "uidValidity" | "lastUid" | "lastSyncAt" | "lastError" | "createdAt">): MailAccount {
+  private rebuildLegacyMessageIdentity(): void {
+    const schema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() as { sql: string } | undefined;
+    if (!schema || !/UNIQUE\s*\(\s*account_id\s*,\s*uid\s*\)/i.test(schema.sql)) return;
+    this.db.pragma("foreign_keys = OFF");
+    try {
+      this.db.exec(`
+        BEGIN IMMEDIATE;
+        CREATE TABLE messages_reliable_sync (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+          uid INTEGER NOT NULL,
+          uid_validity TEXT,
+          provider_message_id TEXT,
+          message_id TEXT,
+          subject TEXT NOT NULL DEFAULT '',
+          from_name TEXT,
+          from_address TEXT,
+          to_text TEXT,
+          received_at TEXT NOT NULL,
+          text_body TEXT,
+          html_body TEXT,
+          snippet TEXT NOT NULL DEFAULT '',
+          has_attachments INTEGER NOT NULL DEFAULT 0,
+          is_read INTEGER NOT NULL DEFAULT 1,
+          is_starred INTEGER NOT NULL DEFAULT 0,
+          size INTEGER NOT NULL DEFAULT 0,
+          body_status TEXT NOT NULL DEFAULT 'fetched',
+          body_error TEXT,
+          body_retryable INTEGER NOT NULL DEFAULT 1,
+          body_fetch_started_at TEXT,
+          provider_deleted INTEGER NOT NULL DEFAULT 0,
+          local_deleted INTEGER NOT NULL DEFAULT 0,
+          deleted_at TEXT,
+          folder TEXT NOT NULL DEFAULT 'inbox' CHECK(folder IN ('inbox', 'archive', 'trash', 'spam')),
+          snoozed_until TEXT,
+          kind TEXT NOT NULL DEFAULT 'received' CHECK(kind IN ('received', 'draft', 'sent')),
+          cc_text TEXT,
+          bcc_text TEXT,
+          auto_label_id INTEGER REFERENCES labels(id),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO messages_reliable_sync (
+          id, account_id, uid, uid_validity, provider_message_id, message_id, subject, from_name,
+          from_address, to_text, received_at, text_body, html_body, snippet, has_attachments,
+          is_read, is_starred, size, body_status, body_error, body_retryable, body_fetch_started_at,
+          provider_deleted, local_deleted, deleted_at, folder, snoozed_until, kind, cc_text, bcc_text,
+          auto_label_id, created_at
+        ) SELECT
+          id, account_id, uid, uid_validity, provider_message_id, message_id, subject, from_name,
+          from_address, to_text, received_at, text_body, html_body, snippet, has_attachments,
+          is_read, is_starred, size, body_status, body_error, body_retryable, body_fetch_started_at,
+          provider_deleted, local_deleted, deleted_at, folder, snoozed_until, kind, cc_text, bcc_text,
+          auto_label_id, created_at
+        FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_reliable_sync RENAME TO messages;
+        COMMIT;
+      `);
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    } finally {
+      this.db.pragma("foreign_keys = ON");
+    }
+  }
+
+  createAccount(input: Omit<MailAccount,
+    "id" | "provider" | "uidValidity" | "lastUid" | "lastSyncAt" | "lastSuccessfulSyncAt" |
+    "lastReconcileAt" | "lastEventAt" | "lastError" | "syncErrorCount" | "syncState" |
+    "nextSyncAt" | "backfillCursor" | "backfillStatus" | "createdAt"
+  > & { provider?: MailAccount["provider"] }): MailAccount {
     const result = this.db.prepare(`
-      INSERT INTO accounts (name, email, host, port, secure, username, encrypted_password, mailbox, enabled)
-      VALUES (@name, @email, @host, @port, @secure, @username, @encryptedPassword, @mailbox, @enabled)
-    `).run({ ...input, secure: Number(input.secure), enabled: Number(input.enabled) });
+      INSERT INTO accounts (name, email, host, port, secure, username, encrypted_password, mailbox, provider, enabled)
+      VALUES (@name, @email, @host, @port, @secure, @username, @encryptedPassword, @mailbox, @provider, @enabled)
+    `).run({ ...input, provider: input.provider ?? inferProvider(input.host), secure: Number(input.secure), enabled: Number(input.enabled) });
     return this.getAccount(Number(result.lastInsertRowid))!;
   }
 
@@ -243,12 +461,18 @@ export class MailDatabase {
       SELECT account_id AS accountId, COUNT(*) AS messageCount,
         SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unreadCount
       FROM messages
-      WHERE kind = 'received'
+      WHERE kind = 'received' AND provider_deleted = 0 AND local_deleted = 0
       GROUP BY account_id
     `).all() as Array<{ accountId: number; messageCount: number; unreadCount: number }>).map((row) => [row.accountId, row]));
     return this.listAccounts().map(({ encryptedPassword: _password, ...account }) => ({
       ...account,
-      status: !account.enabled ? "disabled" : syncingIds.has(account.id) ? "syncing" : account.lastError ? "error" : "ready",
+      status: !account.enabled ? "disabled"
+        : syncingIds.has(account.id) || account.syncState === "syncing" || account.syncState === "initial_sync" ? "syncing"
+        : account.syncState === "backfilling" ? "backfilling"
+        : account.syncState === "reauth_required" ? "reauth_required"
+        : account.syncState === "degraded" ? "degraded"
+        : account.syncState === "error" ? "error"
+        : "ready",
       messageCount: counts.get(account.id)?.messageCount ?? 0,
       unreadCount: counts.get(account.id)?.unreadCount ?? 0
     }));
@@ -259,12 +483,28 @@ export class MailDatabase {
   }
 
   setAccountEnabled(id: number, enabled: boolean): void {
-    this.db.prepare("UPDATE accounts SET enabled = ? WHERE id = ?").run(Number(enabled), id);
+    this.db.prepare(`
+      UPDATE accounts SET enabled = ?,
+        lease_owner = CASE WHEN ? = 0 THEN NULL ELSE lease_owner END,
+        lease_expires_at = CASE WHEN ? = 0 THEN NULL ELSE lease_expires_at END
+      WHERE id = ?
+    `).run(Number(enabled), Number(enabled), Number(enabled), id);
   }
 
   markSyncError(id: number, error: string): void {
-    this.db.prepare("UPDATE accounts SET last_sync_at = ?, last_error = ? WHERE id = ?")
-      .run(new Date().toISOString(), error.slice(0, 1000), id);
+    this.db.prepare(`
+      UPDATE accounts
+      SET last_sync_at = ?, last_error = ?, sync_error_count = sync_error_count + 1,
+        sync_state = CASE WHEN sync_error_count >= 4 THEN 'error' ELSE 'degraded' END
+      WHERE id = ?
+    `).run(new Date().toISOString(), error.slice(0, 1000), id);
+  }
+
+  markReauthRequired(id: number, error: string): void {
+    this.db.prepare(`
+      UPDATE accounts SET last_sync_at = ?, last_error = ?, sync_error_count = sync_error_count + 1,
+        sync_state = 'reauth_required' WHERE id = ?
+    `).run(new Date().toISOString(), error.slice(0, 1000), id);
   }
 
   saveMessages(accountId: number, messages: ParsedMessage[]): number {
@@ -272,45 +512,98 @@ export class MailDatabase {
     const transaction = this.db.transaction((items: ParsedMessage[]) => {
       let inserted = 0;
       for (const message of items) {
+        const providerMessageId = message.providerMessageId ?? `legacy:${message.uid}`;
+        const existing = this.db.prepare("SELECT id FROM messages WHERE account_id = ? AND provider_message_id = ?").get(accountId, providerMessageId) as { id: number } | undefined;
         const result = insert.run({
           accountId,
           ...message,
+          uidValidity: providerMessageId.split(":").at(-2) ?? "legacy",
+          providerMessageId,
+          bodyStatus: normalizeBodyStatus(message.bodyStatus),
           hasAttachments: Number(message.hasAttachments),
           isRead: Number(message.isRead)
         });
-        inserted += result.changes;
-        if (result.changes) this.applyAutoClassification(Number(result.lastInsertRowid), message);
+        if (!existing && result.changes) {
+          inserted += 1;
+          this.applyAutoClassification(Number(result.lastInsertRowid), message);
+        }
       }
       return inserted;
     });
     return transaction(messages);
   }
 
-  commitSync(accountId: number, result: SyncResult): { inserted: number; mailboxReset: boolean } {
+  commitSync(accountId: number, result: SyncResult, leaseOwner?: string): { inserted: number; mailboxReset: boolean } {
     const insert = this.messageInsertStatement();
     const transaction = this.db.transaction(() => {
       const account = this.getAccount(accountId);
       if (!account) throw new Error("邮箱不存在");
+      this.assertAccountLease(accountId, leaseOwner);
       const mailboxReset = account.uidValidity !== null && account.uidValidity !== result.uidValidity;
       if (mailboxReset) {
-        this.db.prepare("DELETE FROM messages WHERE account_id = ? AND kind = 'received'").run(accountId);
+        this.db.prepare(`
+          UPDATE messages SET provider_deleted = 1, deleted_at = ?
+          WHERE account_id = ? AND kind = 'received' AND provider_deleted = 0
+        `).run(new Date().toISOString(), accountId);
+        this.db.prepare(`
+          UPDATE mail_operations SET status = 'failed', last_error = 'UIDVALIDITY 已变化，旧 UID 操作已取消',
+            lease_owner = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+          WHERE account_id = ? AND uid_validity <> ? AND status IN ('pending', 'processing')
+        `).run(accountId, result.uidValidity);
       }
 
       let inserted = 0;
       for (const message of result.messages) {
-        const insertedMessage = insert.run({ accountId, ...message, hasAttachments: Number(message.hasAttachments), isRead: Number(message.isRead) });
-        inserted += insertedMessage.changes;
-        if (insertedMessage.changes) this.applyAutoClassification(Number(insertedMessage.lastInsertRowid), message);
+        const providerMessageId = message.providerMessageId ?? `${account.mailbox}:${result.uidValidity}:${message.uid}`;
+        const existing = this.db.prepare("SELECT id FROM messages WHERE account_id = ? AND provider_message_id = ?").get(accountId, providerMessageId) as { id: number } | undefined;
+        const insertedMessage = insert.run({ accountId, ...message, uidValidity: result.uidValidity, providerMessageId, bodyStatus: normalizeBodyStatus(message.bodyStatus), hasAttachments: Number(message.hasAttachments), isRead: Number(message.isRead) });
+        if (!existing && insertedMessage.changes) {
+          inserted += 1;
+          this.applyAutoClassification(Number(insertedMessage.lastInsertRowid), message);
+        }
       }
-      const updateReadState = this.db.prepare("UPDATE messages SET is_read = ? WHERE account_id = ? AND uid = ? AND kind = 'received'");
-      for (const state of result.readStates) {
-        updateReadState.run(Number(state.isRead), accountId, state.uid);
+      const updateRemoteState = this.db.prepare(`
+        UPDATE messages SET
+          is_read = CASE WHEN EXISTS (
+            SELECT 1 FROM mail_operations o WHERE o.message_id = messages.id
+              AND o.status IN ('pending', 'processing') AND o.operation IN ('mark_read', 'mark_unread')
+          ) THEN is_read ELSE @isRead END,
+          is_starred = CASE WHEN EXISTS (
+            SELECT 1 FROM mail_operations o WHERE o.message_id = messages.id
+              AND o.status IN ('pending', 'processing') AND o.operation IN ('star', 'unstar')
+          ) THEN is_starred ELSE @isStarred END
+        WHERE account_id = @accountId AND uid_validity = @uidValidity AND uid = @uid AND kind = 'received'
+      `);
+      const remoteStates = result.remoteStates ?? ((result as SyncResult & { readStates?: Array<{ uid: number; isRead: boolean }> }).readStates ?? []).map((state) => ({ ...state, isStarred: false }));
+      for (const state of remoteStates) {
+        updateRemoteState.run({ isRead: Number(state.isRead), isStarred: Number(state.isStarred), accountId, uidValidity: result.uidValidity, uid: state.uid });
       }
+      if (result.reconcileWindow) {
+        const present = new Set(result.reconcileWindow.presentUids);
+        const local = this.db.prepare(`
+          SELECT id, uid FROM messages
+          WHERE account_id = ? AND uid_validity = ? AND kind = 'received' AND provider_deleted = 0 AND uid >= ?
+        `).all(accountId, result.uidValidity, result.reconcileWindow.minUid) as Array<{ id: number; uid: number }>;
+        const tombstone = this.db.prepare("UPDATE messages SET provider_deleted = 1, deleted_at = ? WHERE id = ?");
+        const deletedAt = new Date().toISOString();
+        for (const message of local) {
+          if (!present.has(message.uid)) tombstone.run(deletedAt, message.id);
+        }
+      }
+      const completedAt = new Date().toISOString();
       this.db.prepare(`
         UPDATE accounts
-        SET uid_validity = ?, last_uid = ?, last_sync_at = ?, last_error = NULL
+        SET uid_validity = ?,
+          last_uid = CASE WHEN uid_validity IS NULL OR uid_validity <> ? THEN ? ELSE MAX(last_uid, ?) END,
+          last_sync_at = ?, last_successful_sync_at = ?, last_error = NULL,
+          sync_error_count = 0, sync_state = 'idle'
         WHERE id = ?
-      `).run(result.uidValidity, result.lastUid, new Date().toISOString(), accountId);
+      `).run(result.uidValidity, result.uidValidity, result.lastUid, result.lastUid, completedAt, completedAt, accountId);
+      if (result.backfillCursor !== undefined) {
+        this.db.prepare(`
+          UPDATE accounts SET backfill_cursor = ?, backfill_status = ? WHERE id = ?
+        `).run(result.backfillCursor, result.backfillCursor === null ? "complete" : "pending", accountId);
+      }
       return { inserted, mailboxReset };
     });
     return transaction();
@@ -319,15 +612,33 @@ export class MailDatabase {
   private messageInsertStatement(): Database.Statement {
     return this.db.prepare(`
       INSERT INTO messages (
-        account_id, uid, message_id, subject, from_name, from_address, to_text,
+        account_id, uid, uid_validity, provider_message_id, message_id, subject, from_name, from_address, to_text,
         received_at, text_body, html_body, snippet, has_attachments, is_read, size,
-        body_status, body_error
+        body_status, body_error, provider_deleted, deleted_at
       ) VALUES (
-        @accountId, @uid, @messageId, @subject, @fromName, @fromAddress, @toText,
+        @accountId, @uid, @uidValidity, @providerMessageId, @messageId, @subject, @fromName, @fromAddress, @toText,
         @receivedAt, @textBody, @htmlBody, @snippet, @hasAttachments, @isRead, @size,
-        @bodyStatus, @bodyError
+        @bodyStatus, @bodyError, 0, NULL
       )
-      ON CONFLICT(account_id, uid) DO NOTHING
+      ON CONFLICT(account_id, provider_message_id) WHERE provider_message_id IS NOT NULL DO UPDATE SET
+        uid = excluded.uid,
+        uid_validity = excluded.uid_validity,
+        provider_message_id = excluded.provider_message_id,
+        message_id = excluded.message_id,
+        subject = excluded.subject,
+        from_name = excluded.from_name,
+        from_address = excluded.from_address,
+        to_text = excluded.to_text,
+        received_at = excluded.received_at,
+        snippet = CASE WHEN messages.body_status = 'fetched' THEN messages.snippet ELSE excluded.snippet END,
+        has_attachments = excluded.has_attachments,
+        size = excluded.size,
+        text_body = CASE WHEN excluded.body_status = 'fetched' THEN excluded.text_body ELSE messages.text_body END,
+        html_body = CASE WHEN excluded.body_status = 'fetched' THEN excluded.html_body ELSE messages.html_body END,
+        body_status = CASE WHEN messages.body_status = 'fetched' AND excluded.body_status = 'not_fetched' THEN messages.body_status ELSE excluded.body_status END,
+        body_error = CASE WHEN excluded.body_status = 'fetched' THEN NULL ELSE messages.body_error END,
+        provider_deleted = 0,
+        deleted_at = NULL
     `);
   }
 
@@ -342,7 +653,7 @@ export class MailDatabase {
     limit: number;
     offset: number;
   }): { messages: unknown[]; total: number } {
-    const conditions: string[] = [];
+    const conditions: string[] = ["m.provider_deleted = 0", "m.local_deleted = 0"];
     const parameters: Record<string, unknown> = { limit: input.limit, offset: input.offset, now: new Date().toISOString() };
     switch (input.view ?? "inbox") {
       case "inbox":
@@ -427,7 +738,7 @@ export class MailDatabase {
         m.has_attachments AS hasAttachments, m.is_read AS isRead, m.is_starred AS isStarred, m.size, m.body_status AS bodyStatus,
         m.body_error AS bodyError, m.folder, m.snoozed_until AS snoozedUntil, m.kind
       FROM messages m JOIN accounts a ON a.id = m.account_id
-      WHERE m.id = ?
+      WHERE m.id = ? AND m.provider_deleted = 0 AND m.local_deleted = 0
     `).get(id) as any;
     if (!row) return null;
     return {
@@ -454,9 +765,10 @@ export class MailDatabase {
     const uniqueIds = [...new Set(ids)];
     const transaction = this.db.transaction(() => {
       const placeholders = uniqueIds.map(() => "?").join(", ");
-      const existingIds = uniqueIds.length
-        ? (this.db.prepare(`SELECT id FROM messages WHERE id IN (${placeholders})`).all(...uniqueIds) as Array<{ id: number }>).map((row) => row.id)
+      const existingMessages = uniqueIds.length
+        ? this.db.prepare(`SELECT id, account_id AS accountId, uid, uid_validity AS uidValidity, kind FROM messages WHERE id IN (${placeholders}) AND provider_deleted = 0 AND local_deleted = 0`).all(...uniqueIds) as Array<{ id: number; accountId: number; uid: number; uidValidity: string; kind: MessageKind }>
         : [];
+      const existingIds = existingMessages.map((row) => row.id);
       const existingSet = new Set(existingIds);
       const missingIds = uniqueIds.filter((id) => !existingSet.has(id));
 
@@ -492,13 +804,342 @@ export class MailDatabase {
           for (const labelId of [...new Set(actions.labels)]) insert.run(messageId, labelId);
         }
       }
+      for (const message of existingMessages) {
+        if (message.kind !== "received") continue;
+        if (actions.isRead !== undefined) this.enqueueOperationInternal(message, actions.isRead ? "mark_read" : "mark_unread");
+        if (actions.isStarred !== undefined) this.enqueueOperationInternal(message, actions.isStarred ? "star" : "unstar");
+      }
       return { updated: existingIds.length, missingIds };
     });
     return transaction();
   }
 
   deleteMessage(id: number): boolean {
-    return this.db.prepare("DELETE FROM messages WHERE id = ?").run(id).changes > 0;
+    return this.db.prepare(`
+      UPDATE messages SET local_deleted = 1, deleted_at = ?
+      WHERE id = ? AND local_deleted = 0
+    `).run(new Date().toISOString(), id).changes > 0;
+  }
+
+  getMessageProviderRef(id: number): { id: number; accountId: number; uid: number; uidValidity: string; size: number; bodyStatus: string; bodyRetryable: boolean } | null {
+    const row = this.db.prepare(`
+      SELECT id, account_id AS accountId, uid, uid_validity AS uidValidity, size,
+        body_status AS bodyStatus, body_retryable AS bodyRetryable
+      FROM messages WHERE id = ? AND kind = 'received' AND provider_deleted = 0 AND local_deleted = 0
+    `).get(id) as { id: number; accountId: number; uid: number; uidValidity: string; size: number; bodyStatus: string; bodyRetryable: number } | undefined;
+    return row ? { ...row, bodyRetryable: Boolean(row.bodyRetryable) } : null;
+  }
+
+  markBodyFetching(id: number): boolean {
+    return this.db.prepare(`
+      UPDATE messages SET body_status = 'fetching', body_error = NULL, body_retryable = 1, body_fetch_started_at = ?
+      WHERE id = ? AND body_status IN ('not_fetched', 'failed') AND provider_deleted = 0 AND local_deleted = 0
+    `).run(new Date().toISOString(), id).changes > 0;
+  }
+
+  reclaimStaleBodyFetches(staleBefore: string): void {
+    this.db.prepare(`
+      UPDATE messages SET body_status = 'failed', body_error = '正文获取任务中断，可重试',
+        body_retryable = 1, body_fetch_started_at = NULL
+      WHERE body_status = 'fetching' AND (body_fetch_started_at IS NULL OR body_fetch_started_at <= ?)
+    `).run(staleBefore);
+  }
+
+  saveMessageBody(id: number, body: Pick<ParsedMessage, "textBody" | "htmlBody" | "snippet" | "hasAttachments" | "size" | "bodyStatus" | "bodyError">, leaseOwner?: string): void {
+    const result = this.db.prepare(`
+      UPDATE messages SET text_body = @textBody, html_body = @htmlBody, snippet = @snippet,
+        has_attachments = @hasAttachments, size = @size, body_status = @bodyStatus, body_error = @bodyError,
+        body_retryable = @bodyRetryable, body_fetch_started_at = NULL
+      WHERE id = @id AND provider_deleted = 0 AND local_deleted = 0
+        AND (@leaseOwner IS NULL OR EXISTS (
+          SELECT 1 FROM accounts WHERE accounts.id = messages.account_id AND accounts.lease_owner = @leaseOwner
+        ))
+    `).run({ id, ...body, leaseOwner: leaseOwner ?? null, hasAttachments: Number(body.hasAttachments), bodyRetryable: Number(body.bodyStatus !== "failed") });
+    if (leaseOwner && !result.changes) throw new Error("账号同步租约已失效");
+  }
+
+  markBodyFailed(id: number, error: string, retryable = true, leaseOwner?: string): void {
+    this.db.prepare(`
+      UPDATE messages SET body_status = 'failed', body_error = ?, body_retryable = ?, body_fetch_started_at = NULL
+      WHERE id = ? AND (? IS NULL OR EXISTS (
+        SELECT 1 FROM accounts WHERE accounts.id = messages.account_id AND accounts.lease_owner = ?
+      ))
+    `).run(error.slice(0, 1000), Number(retryable), id, leaseOwner ?? null, leaseOwner ?? null);
+  }
+
+  commitBackfill(accountId: number, result: BackfillResult, leaseOwner?: string): { inserted: number; complete: boolean } {
+    const insert = this.messageInsertStatement();
+    const transaction = this.db.transaction(() => {
+      this.assertAccountLease(accountId, leaseOwner);
+      let inserted = 0;
+      for (const message of result.messages) {
+        const account = this.getAccount(accountId);
+        if (!account?.uidValidity) throw new Error("邮箱同步游标不存在");
+        const providerMessageId = message.providerMessageId ?? `${account.mailbox}:${account.uidValidity}:${message.uid}`;
+        const existing = this.db.prepare("SELECT id FROM messages WHERE account_id = ? AND provider_message_id = ?").get(accountId, providerMessageId) as { id: number } | undefined;
+        const stored = insert.run({ accountId, ...message, uidValidity: account.uidValidity, providerMessageId, bodyStatus: normalizeBodyStatus(message.bodyStatus), hasAttachments: Number(message.hasAttachments), isRead: Number(message.isRead) });
+        if (!existing && stored.changes) {
+          inserted += 1;
+          this.applyAutoClassification(Number(stored.lastInsertRowid), message);
+        }
+      }
+      const updateRemoteState = this.db.prepare(`
+        UPDATE messages SET
+          is_read = CASE WHEN EXISTS (
+            SELECT 1 FROM mail_operations o WHERE o.message_id = messages.id
+              AND o.status IN ('pending', 'processing') AND o.operation IN ('mark_read', 'mark_unread')
+          ) THEN is_read ELSE @isRead END,
+          is_starred = CASE WHEN EXISTS (
+            SELECT 1 FROM mail_operations o WHERE o.message_id = messages.id
+              AND o.status IN ('pending', 'processing') AND o.operation IN ('star', 'unstar')
+          ) THEN is_starred ELSE @isStarred END
+        WHERE account_id = @accountId AND uid_validity = @uidValidity AND uid = @uid AND kind = 'received'
+      `);
+      const account = this.getAccount(accountId);
+      for (const state of result.remoteStates ?? []) updateRemoteState.run({ isRead: Number(state.isRead), isStarred: Number(state.isStarred), accountId, uidValidity: account?.uidValidity, uid: state.uid });
+      this.db.prepare(`
+        UPDATE accounts SET backfill_cursor = ?, backfill_status = ?, sync_state = ?, last_error = NULL
+        WHERE id = ?
+      `).run(result.nextCursor, result.complete ? "complete" : "pending", result.complete ? "idle" : "backfilling", accountId);
+      return { inserted, complete: result.complete };
+    });
+    return transaction();
+  }
+
+  acquireAccountLease(accountId: number, owner: string, leaseMs: number): boolean {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + leaseMs).toISOString();
+    return this.db.prepare(`
+      UPDATE accounts SET lease_owner = ?, lease_expires_at = ?
+      WHERE id = ? AND (lease_owner IS NULL OR lease_expires_at <= ? OR lease_owner = ?)
+    `).run(owner, expiresAt, accountId, now.toISOString(), owner).changes > 0;
+  }
+
+  renewAccountLease(accountId: number, owner: string, leaseMs: number): boolean {
+    return this.db.prepare("UPDATE accounts SET lease_expires_at = ? WHERE id = ? AND lease_owner = ?")
+      .run(new Date(Date.now() + leaseMs).toISOString(), accountId, owner).changes > 0;
+  }
+
+  releaseAccountLease(accountId: number, owner: string): void {
+    this.db.prepare("UPDATE accounts SET lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND lease_owner = ?")
+      .run(accountId, owner);
+  }
+
+  hasAccountLease(accountId: number, owner: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM accounts WHERE id = ? AND enabled = 1 AND lease_owner = ? AND lease_expires_at > ?")
+      .get(accountId, owner, new Date().toISOString()));
+  }
+
+  markSyncStarted(accountId: number, state: MailAccount["syncState"]): void {
+    this.db.prepare("UPDATE accounts SET sync_state = ?, last_sync_at = ? WHERE id = ?")
+      .run(state, new Date().toISOString(), accountId);
+  }
+
+  markReconciled(accountId: number, nextSyncAt: string): void {
+    this.db.prepare("UPDATE accounts SET last_reconcile_at = ?, next_sync_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), nextSyncAt, accountId);
+  }
+
+  recordSyncEvent(accountId: number): void {
+    this.db.prepare("UPDATE accounts SET last_event_at = ? WHERE id = ?").run(new Date().toISOString(), accountId);
+  }
+
+  setNextSyncAt(accountId: number, nextSyncAt: string): void {
+    this.db.prepare("UPDATE accounts SET next_sync_at = ? WHERE id = ?").run(nextSyncAt, accountId);
+  }
+
+  enqueueJob(accountId: number, type: MailJobType, priority: number, reason: string, runAfter = new Date(), maxAttempts = 5, preserveExistingRunAfter = false, reactivateFailed = false): void {
+    this.db.prepare(`
+      INSERT INTO mail_jobs (account_id, type, priority, reason, run_after, max_attempts)
+      VALUES (@accountId, @type, @priority, @reason, @runAfter, @maxAttempts)
+      ON CONFLICT(account_id, type) DO UPDATE SET
+        priority = MIN(mail_jobs.priority, excluded.priority),
+        reason = excluded.reason,
+        run_after = CASE
+          WHEN mail_jobs.status = 'processing' THEN excluded.run_after
+          WHEN mail_jobs.status = 'failed' AND @reactivateFailed = 1 THEN excluded.run_after
+          WHEN @preserveExistingRunAfter = 1 AND mail_jobs.status = 'pending' THEN mail_jobs.run_after
+          ELSE MIN(mail_jobs.run_after, excluded.run_after)
+        END,
+        max_attempts = excluded.max_attempts,
+        attempts = CASE WHEN mail_jobs.status = 'failed' AND (@preserveExistingRunAfter = 0 OR @reactivateFailed = 1) THEN 0 ELSE mail_jobs.attempts END,
+        rerun_requested = CASE WHEN mail_jobs.status = 'processing' THEN 1 ELSE mail_jobs.rerun_requested END,
+        status = CASE
+          WHEN mail_jobs.status = 'processing' THEN mail_jobs.status
+          WHEN mail_jobs.status = 'failed' AND @preserveExistingRunAfter = 1 AND @reactivateFailed = 0 THEN mail_jobs.status
+          ELSE 'pending'
+        END,
+        updated_at = CURRENT_TIMESTAMP
+    `).run({
+      accountId,
+      type,
+      priority,
+      reason: reason.slice(0, 200),
+      runAfter: runAfter.toISOString(),
+      maxAttempts,
+      preserveExistingRunAfter: Number(preserveExistingRunAfter),
+      reactivateFailed: Number(reactivateFailed)
+    });
+  }
+
+  claimNextJob(owner: string, leaseMs: number): MailJob | null {
+    const transaction = this.db.transaction(() => {
+      const now = new Date().toISOString();
+      this.db.prepare(`
+        UPDATE mail_jobs SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
+        WHERE status = 'processing' AND lease_expires_at <= ?
+      `).run(now);
+      const row = this.db.prepare(`
+        SELECT j.id, j.account_id AS accountId, j.type, j.priority, j.reason, j.attempts, j.max_attempts AS maxAttempts
+        FROM mail_jobs j JOIN accounts a ON a.id = j.account_id
+        WHERE j.status = 'pending' AND j.run_after <= ? AND a.enabled = 1
+          AND NOT EXISTS (SELECT 1 FROM mail_jobs active WHERE active.account_id = j.account_id AND active.status = 'processing')
+        ORDER BY j.priority ASC, j.run_after ASC, j.id ASC LIMIT 1
+      `).get(now) as MailJob | undefined;
+      if (!row) return null;
+      const claimed = this.db.prepare(`
+        UPDATE mail_jobs SET status = 'processing', attempts = attempts + 1, lease_owner = ?,
+          lease_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'
+      `).run(owner, new Date(Date.now() + leaseMs).toISOString(), row.id);
+      return claimed.changes ? { ...row, attempts: row.attempts + 1 } : null;
+    });
+    return transaction();
+  }
+
+  renewJobLease(id: number, owner: string, leaseMs: number): boolean {
+    return this.db.prepare(`
+      UPDATE mail_jobs SET lease_expires_at = ? WHERE id = ? AND status = 'processing' AND lease_owner = ?
+    `).run(new Date(Date.now() + leaseMs).toISOString(), id, owner).changes > 0;
+  }
+
+  completeJob(id: number, owner: string): void {
+    const row = this.db.prepare("SELECT rerun_requested AS rerunRequested FROM mail_jobs WHERE id = ? AND status = 'processing' AND lease_owner = ?").get(id, owner) as { rerunRequested: number } | undefined;
+    if (!row) return;
+    if (row.rerunRequested) {
+      this.db.prepare(`
+        UPDATE mail_jobs SET status = 'pending', attempts = 0, run_after = ?, rerun_requested = 0,
+          lease_owner = NULL, lease_expires_at = NULL, last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND lease_owner = ?
+      `).run(new Date().toISOString(), id, owner);
+    } else {
+      this.db.prepare("DELETE FROM mail_jobs WHERE id = ? AND lease_owner = ?").run(id, owner);
+    }
+  }
+
+  failJob(id: number, owner: string, error: string, retryAt: Date | null): void {
+    if (retryAt) {
+      this.db.prepare(`
+        UPDATE mail_jobs SET status = 'pending', run_after = ?, lease_owner = NULL, lease_expires_at = NULL,
+          last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'processing' AND lease_owner = ?
+      `).run(retryAt.toISOString(), error.slice(0, 1000), id, owner);
+    } else {
+      this.db.prepare(`
+        UPDATE mail_jobs SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+          last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'processing' AND lease_owner = ?
+      `).run(error.slice(0, 1000), id, owner);
+    }
+  }
+
+  claimNextOperation(accountId: number, owner: string, leaseMs: number): MailOperation | null {
+    const transaction = this.db.transaction(() => {
+      const now = new Date().toISOString();
+      this.db.prepare(`
+        UPDATE mail_operations SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL
+        WHERE status = 'processing' AND lease_expires_at <= ?
+      `).run(now);
+      const row = this.db.prepare(`
+        SELECT id, account_id AS accountId, message_id AS messageId, uid, uid_validity AS uidValidity, operation, payload,
+          attempts, max_attempts AS maxAttempts
+        FROM mail_operations
+        WHERE account_id = ? AND status = 'pending' AND next_retry_at <= ?
+        ORDER BY id ASC LIMIT 1
+      `).get(accountId, now) as (Omit<MailOperation, "payload"> & { payload: string }) | undefined;
+      if (!row) return null;
+      const claimed = this.db.prepare(`
+        UPDATE mail_operations SET status = 'processing', attempts = attempts + 1, lease_owner = ?,
+          lease_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'
+      `).run(owner, new Date(Date.now() + leaseMs).toISOString(), row.id);
+      return claimed.changes ? { ...row, attempts: row.attempts + 1, payload: JSON.parse(row.payload) as Record<string, unknown> } : null;
+    });
+    return transaction();
+  }
+
+  renewOperationLease(id: number, owner: string, leaseMs: number): boolean {
+    return this.db.prepare(`
+      UPDATE mail_operations SET lease_expires_at = ? WHERE id = ? AND status = 'processing' AND lease_owner = ?
+    `).run(new Date(Date.now() + leaseMs).toISOString(), id, owner).changes > 0;
+  }
+
+  completeOperation(id: number, owner: string): boolean {
+    return this.db.prepare(`
+      UPDATE mail_operations SET status = 'success', lease_owner = NULL, lease_expires_at = NULL,
+        last_error = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'processing' AND lease_owner = ?
+        AND EXISTS (
+          SELECT 1 FROM accounts WHERE accounts.id = mail_operations.account_id
+            AND accounts.enabled = 1 AND accounts.lease_owner = ? AND accounts.lease_expires_at > ?
+        )
+    `).run(id, owner, owner, new Date().toISOString()).changes > 0;
+  }
+
+  failOperation(id: number, owner: string, error: string, retryAt: Date | null): void {
+    this.db.prepare(`
+      UPDATE mail_operations SET status = ?, next_retry_at = COALESCE(?, next_retry_at),
+        lease_owner = NULL, lease_expires_at = NULL, last_error = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'processing' AND lease_owner = ?
+    `).run(retryAt ? "pending" : "failed", retryAt?.toISOString() ?? null, error.slice(0, 1000), id, owner);
+  }
+
+  hasPendingOperations(accountId: number): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM mail_operations WHERE account_id = ? AND status IN ('pending', 'processing') LIMIT 1").get(accountId));
+  }
+
+  enqueueCorrectiveOperation(messageId: number, family: "read" | "star"): void {
+    const transaction = this.db.transaction(() => {
+      const message = this.db.prepare(`
+        SELECT id, account_id AS accountId, uid, uid_validity AS uidValidity, is_read AS isRead, is_starred AS isStarred
+        FROM messages WHERE id = ? AND provider_deleted = 0 AND local_deleted = 0 AND kind = 'received'
+      `).get(messageId) as { id: number; accountId: number; uid: number; uidValidity: string; isRead: number; isStarred: number } | undefined;
+      if (!message) return;
+      const operation: MailOperationType = family === "read"
+        ? (message.isRead ? "mark_read" : "mark_unread")
+        : (message.isStarred ? "star" : "unstar");
+      this.enqueueOperationInternal(message, operation);
+    });
+    transaction();
+  }
+
+  countJobs(accountId: number, type?: MailJobType): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM mail_jobs WHERE account_id = ? ${type ? "AND type = ?" : ""}
+    `).get(...(type ? [accountId, type] : [accountId])) as { count: number };
+    return row.count;
+  }
+
+  getOperationState(messageId: number): { status: string; attempts: number; lastError: string | null } | null {
+    return this.db.prepare(`
+      SELECT status, attempts, last_error AS lastError FROM mail_operations
+      WHERE message_id = ? ORDER BY id DESC LIMIT 1
+    `).get(messageId) as { status: string; attempts: number; lastError: string | null } | undefined ?? null;
+  }
+
+  getMessageDeletionState(id: number): { providerDeleted: boolean; localDeleted: boolean; deletedAt: string | null } | null {
+    const row = this.db.prepare(`
+      SELECT provider_deleted AS providerDeleted, local_deleted AS localDeleted, deleted_at AS deletedAt
+      FROM messages WHERE id = ?
+    `).get(id) as { providerDeleted: number; localDeleted: number; deletedAt: string | null } | undefined;
+    return row ? { providerDeleted: Boolean(row.providerDeleted), localDeleted: Boolean(row.localDeleted), deletedAt: row.deletedAt } : null;
+  }
+
+  private enqueueOperationInternal(message: { id: number; accountId: number; uid: number; uidValidity: string }, operation: MailOperationType): void {
+    const family = operation === "mark_read" || operation === "mark_unread" ? ["mark_read", "mark_unread"] : ["star", "unstar"];
+    this.db.prepare(`
+      DELETE FROM mail_operations WHERE message_id = ? AND status = 'pending' AND operation IN (?, ?)
+    `).run(message.id, ...family);
+    this.db.prepare(`
+      INSERT INTO mail_operations (account_id, message_id, uid, uid_validity, operation, next_retry_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(message.accountId, message.id, message.uid, message.uidValidity, operation, new Date().toISOString());
+    this.enqueueJob(message.accountId, "operation", 0, "user_operation");
   }
 
   listLabels(): Array<MessageLabel & { messageCount: number }> {
@@ -650,6 +1291,11 @@ export class MailDatabase {
     if (count !== uniqueIds.length) throw new Error("标签不存在");
   }
 
+  private assertAccountLease(accountId: number, leaseOwner?: string): void {
+    if (!leaseOwner) return;
+    if (!this.hasAccountLease(accountId, leaseOwner)) throw new Error("账号同步租约已失效");
+  }
+
   private labelsForMessageIds(messageIds: number[]): Map<number, MessageLabel[]> {
     const result = new Map<number, MessageLabel[]>();
     if (!messageIds.length) return result;
@@ -687,11 +1333,20 @@ export class MailDatabase {
       username: row.username,
       encryptedPassword: row.encrypted_password,
       mailbox: row.mailbox,
+      provider: row.provider,
       enabled: Boolean(row.enabled),
       uidValidity: row.uid_validity,
       lastUid: row.last_uid,
       lastSyncAt: row.last_sync_at,
+      lastSuccessfulSyncAt: row.last_successful_sync_at,
+      lastReconcileAt: row.last_reconcile_at,
+      lastEventAt: row.last_event_at,
       lastError: row.last_error,
+      syncErrorCount: row.sync_error_count,
+      syncState: row.sync_state,
+      nextSyncAt: row.next_sync_at,
+      backfillCursor: row.backfill_cursor,
+      backfillStatus: row.backfill_status,
       createdAt: row.created_at
     };
   }

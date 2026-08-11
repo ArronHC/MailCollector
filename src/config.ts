@@ -55,5 +55,18 @@ export const config = {
   allowPrivateMailHosts: boolean("ALLOW_PRIVATE_MAIL_HOSTS", false),
   syncIntervalMinutes: integer("SYNC_INTERVAL_MINUTES", 5),
   initialSyncLimit: integer("INITIAL_SYNC_LIMIT", 100),
-  maxMessageBytes: integer("MAX_MESSAGE_BYTES", 10 * 1024 * 1024)
+  maxMessageBytes: integer("MAX_MESSAGE_BYTES", 10 * 1024 * 1024),
+  backfillPageSize: integer("BACKFILL_PAGE_SIZE", 100),
+  reconcileMessageLimit: integer("RECONCILE_MESSAGE_LIMIT", 500),
+  activeReconcileMinutes: integer("ACTIVE_RECONCILE_MINUTES", 30),
+  normalReconcileMinutes: integer("NORMAL_RECONCILE_MINUTES", 180),
+  inactiveReconcileMinutes: integer("INACTIVE_RECONCILE_MINUTES", 720),
+  syncLeaseSeconds: integer("SYNC_LEASE_SECONDS", 300),
+  providerMaxAttempts: integer("PROVIDER_MAX_ATTEMPTS", 5),
+  providerMaxConcurrency: integer("PROVIDER_MAX_CONCURRENCY", 3),
+  workerIntervalSeconds: integer("MAIL_WORKER_INTERVAL_SECONDS", 2),
+  imapIdleEnabled: boolean("IMAP_IDLE_ENABLED", true),
+  imapIdleScanSeconds: integer("IMAP_IDLE_SCAN_SECONDS", 30),
+  imapIdleDebounceMs: integer("IMAP_IDLE_DEBOUNCE_MS", 750),
+  imapIdleReconnectMaxSeconds: integer("IMAP_IDLE_RECONNECT_MAX_SECONDS", 300)
 };

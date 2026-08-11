@@ -32,6 +32,7 @@ test("records inserted messages and advances the last UID", async () => {
     async sync() {
       return { messages: [{
         uid: 7,
+        providerMessageId: "INBOX:100:7",
         messageId: null,
         subject: "A message",
         fromName: null,
@@ -44,9 +45,9 @@ test("records inserted messages and advances the last UID", async () => {
         hasAttachments: false,
         isRead: false,
         size: 10,
-        bodyStatus: "complete",
+        bodyStatus: "fetched",
         bodyError: null
-      }], readStates: [{ uid: 7, isRead: false }], lastUid: 7, uidValidity: "100" };
+      }], remoteStates: [{ uid: 7, isRead: false, isStarred: false }], lastUid: 7, uidValidity: "100" };
     }
   };
 
@@ -76,7 +77,7 @@ test("reports per-account failures when synchronizing all accounts", async () =>
     async testConnection(_account: MailAccount) {},
     async sync(input) {
       if (input.id !== account.id) throw new Error("authentication failed");
-      return { messages: [], readStates: [], lastUid: 0, uidValidity: "100" };
+      return { messages: [], remoteStates: [], lastUid: 0, uidValidity: "100" };
     }
   };
 

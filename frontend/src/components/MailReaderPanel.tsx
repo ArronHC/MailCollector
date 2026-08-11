@@ -48,7 +48,7 @@ function messageDocument(html: string): string {
 }
 
 export function RealEmailContent({ mail }: { mail: MailDetail }) {
-  if (mail.bodyStatus !== "complete") return <div className="real-email-card body-unavailable"><strong>{mail.bodyStatus === "too_large" ? "邮件正文过大，未下载" : "邮件正文解析失败"}</strong><p>{mail.bodyError || mail.snippet || "暂无可显示的正文。"}</p></div>;
+  if (mail.bodyStatus !== "fetched") return <div className="real-email-card body-unavailable"><strong>{mail.bodyStatus === "fetching" ? "正在获取邮件正文" : mail.bodyStatus === "not_fetched" ? "邮件正文尚未下载" : "邮件正文获取失败"}</strong><p>{mail.bodyError || mail.snippet || "暂无可显示的正文。"}</p></div>;
   if (mail.htmlBody) return <div className="real-email-card"><iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody)} title="邮件正文" /></div>;
   return <div className="real-email-card plain-message">{mail.textBody || mail.snippet || "这封邮件没有可显示的正文。"}</div>;
 }

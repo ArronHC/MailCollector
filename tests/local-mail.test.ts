@@ -27,6 +27,7 @@ function fixture() {
 function message(uid: number, subject = `Message ${uid}`): ParsedMessage {
   return {
     uid,
+    providerMessageId: `INBOX:100:${uid}`,
     messageId: `${uid}@example.com`,
     subject,
     fromName: "Sender",
@@ -39,7 +40,7 @@ function message(uid: number, subject = `Message ${uid}`): ParsedMessage {
     hasAttachments: false,
     isRead: false,
     size: 10,
-    bodyStatus: "complete",
+    bodyStatus: "fetched",
     bodyError: null
   };
 }
@@ -109,12 +110,12 @@ test("supports folders, snooze, labels, bulk actions, and local conflict preserv
 
   database.commitSync(account.id, {
     messages: [message(1, "Server replacement")],
-    readStates: [{ uid: 1, isRead: true }],
+    remoteStates: [{ uid: 1, isRead: true, isStarred: false }],
     lastUid: 3,
     uidValidity: "100"
   });
   const preserved = database.getMessage(1) as { subject: string; folder: string; snoozedUntil: string; labels: Array<{ id: number }> };
-  assert.equal(preserved.subject, "Message 1");
+  assert.equal(preserved.subject, "Server replacement");
   assert.equal(preserved.folder, "inbox");
   assert.equal(preserved.snoozedUntil, "2099-01-01T00:00:00.000Z");
   assert.deepEqual(preserved.labels.map((label) => label.id).sort((a, b) => a - b), [work.id, custom.id].sort((a, b) => a - b));
@@ -167,8 +168,8 @@ test("stores and updates drafts, creates sent copies, and preserves local record
   assert.equal(database.listMessages({ view: "drafts", limit: 40, offset: 0 }).total, 0);
   assert.equal(database.listMessages({ view: "sent", limit: 40, offset: 0 }).total, 2);
 
-  database.commitSync(account.id, { messages: [message(1)], readStates: [], lastUid: 1, uidValidity: "100" });
-  database.commitSync(account.id, { messages: [message(1, "Reset copy")], readStates: [], lastUid: 1, uidValidity: "200" });
+  database.commitSync(account.id, { messages: [message(1)], remoteStates: [], lastUid: 1, uidValidity: "100" });
+  database.commitSync(account.id, { messages: [{ ...message(1, "Reset copy"), providerMessageId: "INBOX:200:1" }], remoteStates: [], lastUid: 1, uidValidity: "200" });
   assert.equal(database.listMessages({ view: "sent", limit: 40, offset: 0 }).total, 2);
   assert.equal(database.listMessages({ view: "inbox", limit: 40, offset: 0 }).total, 1);
   database.close();

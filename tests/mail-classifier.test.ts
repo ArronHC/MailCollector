@@ -23,9 +23,9 @@ test("automatically labels inserted mail and preserves manual labels during recl
   const database = new MailDatabase(path.join(directory, "test.db"));
   const account = database.createAccount({ name: "Test", email: "test@example.com", host: "imap.example.com", port: 993, secure: true, username: "test@example.com", encryptedPassword: "encrypted", mailbox: "INBOX", enabled: true });
   const message: ParsedMessage = {
-    uid: 1, messageId: "newsletter@example.com", subject: "Weekly newsletter", fromName: "Product News", fromAddress: "newsletter@example.com", toText: "test@example.com",
+    uid: 1, providerMessageId: "INBOX:100:1", messageId: "newsletter@example.com", subject: "Weekly newsletter", fromName: "Product News", fromAddress: "newsletter@example.com", toText: "test@example.com",
     receivedAt: new Date().toISOString(), textBody: "Manage preferences or unsubscribe", htmlBody: null, snippet: "Weekly updates", hasAttachments: false,
-    isRead: false, size: 20, bodyStatus: "complete", bodyError: null
+    isRead: false, size: 20, bodyStatus: "fetched", bodyError: null
   };
   database.saveMessages(account.id, [message]);
   const stored = database.listMessages({ view: "all", limit: 10, offset: 0 }).messages as Array<{ id: number; labels: Array<{ id: number; name: string }> }>;

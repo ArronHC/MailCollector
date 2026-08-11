@@ -11,7 +11,7 @@ export function ComposeButton({ onClick }: { onClick: () => void }) {
 
 export function AccountItem({ account, active, onClick, onManage }: { account: MailAccount; active: boolean; onClick: () => void; onManage: () => void }) {
   const source = accountSource(account);
-  return <button className={`account-item interactive${active ? " active" : ""}`} onClick={onClick} onDoubleClick={onManage} title={`${account.email}${account.lastError ? `\n${account.lastError}` : ""}`}><AccountBrand source={source} /><span>{account.name.trim() || sourceNames[source]}</span><b>{account.status === "syncing" ? "..." : account.unreadCount}</b></button>;
+  return <button className={`account-item interactive${active ? " active" : ""}`} onClick={onClick} onDoubleClick={onManage} title={`${account.email}${account.lastError ? `\n${account.lastError}` : ""}`}><AccountBrand source={source} /><span>{account.name.trim() || sourceNames[source]}</span><b>{account.status === "syncing" || account.status === "backfilling" ? "..." : account.unreadCount}</b></button>;
 }
 
 export function AccountList({ accounts, activeAccountId, onSelect, onAdd, onManage }: { accounts: MailAccount[]; activeAccountId: number | null; onSelect: (id: number) => void; onAdd: () => void; onManage: () => void }) {

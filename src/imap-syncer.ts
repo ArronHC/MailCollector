@@ -2,165 +2,252 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { decryptSecret } from "./crypto.js";
 import { assertAllowedMailHost, createMailHostLookup } from "./network-security.js";
-import type { MailAccount, MailSyncer, ParsedMessage, SyncResult } from "./types.js";
+import type { BackfillResult, MailAccount, MailOperation, MailProvider, ParsedMessage, SyncResult } from "./types.js";
 
-function addressText(value: unknown): string | null {
-  if (!value || typeof value !== "object" || !("text" in value)) return null;
-  return String(value.text || "") || null;
-}
-
-function firstAddress(value: unknown): { name: string | null; address: string | null } {
-  if (!value || typeof value !== "object" || !("value" in value) || !Array.isArray(value.value)) {
-    return { name: null, address: null };
-  }
-  const first = value.value[0];
-  return first ? { name: first.name || null, address: first.address || null } : { name: null, address: null };
-}
+type ImapItem = Awaited<ReturnType<ImapFlow["fetchOne"]>> & object;
 
 function envelopeAddresses(addresses: Array<{ name?: string; address?: string }> | undefined): string | null {
   if (!addresses?.length) return null;
   return addresses.map((item) => item.name ? `${item.name} <${item.address ?? ""}>` : item.address ?? "").filter(Boolean).join(", ") || null;
 }
 
-function placeholder(
-  item: Awaited<ReturnType<ImapFlow["fetchOne"]>> & object,
-  status: "too_large" | "parse_error",
-  error: string
-): ParsedMessage {
+function hasAttachment(node: any): boolean {
+  if (!node) return false;
+  if (node.disposition === "attachment" || node.dispositionParameters?.filename || node.parameters?.name) return true;
+  return Array.isArray(node.childNodes) && node.childNodes.some(hasAttachment);
+}
+
+function metadata(item: ImapItem, mailbox: string, uidValidity: string): ParsedMessage {
   const sender = item.envelope?.from?.[0];
+  const subject = item.envelope?.subject || "(无主题)";
   return {
     uid: item.uid,
+    providerMessageId: `${mailbox}:${uidValidity}:${item.uid}`,
     messageId: item.envelope?.messageId || null,
-    subject: item.envelope?.subject || "(无主题)",
+    subject,
     fromName: sender?.name || null,
     fromAddress: sender?.address || null,
     toText: envelopeAddresses(item.envelope?.to),
     receivedAt: new Date(item.internalDate ?? item.envelope?.date ?? Date.now()).toISOString(),
     textBody: null,
     htmlBody: null,
-    snippet: status === "too_large" ? "邮件正文超过本地大小限制，未下载。" : "邮件正文解析失败，已保留邮件信息。",
-    hasAttachments: Boolean(item.bodyStructure?.childNodes?.some((node) => node.disposition === "attachment")),
+    snippet: subject.replace(/\s+/g, " ").trim().slice(0, 240),
+    hasAttachments: hasAttachment(item.bodyStructure),
     isRead: item.flags?.has("\\Seen") ?? false,
     size: item.size || 0,
-    bodyStatus: status,
-    bodyError: error.slice(0, 1000)
+    bodyStatus: "not_fetched",
+    bodyError: null
   };
 }
 
-export class ImapMailSyncer implements MailSyncer {
+function remoteState(item: ImapItem): { uid: number; isRead: boolean; isStarred: boolean } {
+  return {
+    uid: item.uid,
+    isRead: item.flags?.has("\\Seen") ?? false,
+    isStarred: item.flags?.has("\\Flagged") ?? false
+  };
+}
+
+export class ImapMailProvider implements MailProvider {
   constructor(private readonly encryptionKey: Buffer, private readonly allowPrivateMailHosts = false) {}
 
   async testConnection(account: MailAccount): Promise<void> {
+    await this.withMailbox(account, true, 1024 * 1024, async () => undefined);
+  }
+
+  initialSync(account: MailAccount, initialLimit: number, signal?: AbortSignal): Promise<SyncResult> {
+    return this.syncMetadata(account, initialLimit, true, signal);
+  }
+
+  incrementalSync(account: MailAccount, reconcileLimit: number, signal?: AbortSignal): Promise<SyncResult> {
+    return this.syncMetadata(account, reconcileLimit, false, signal);
+  }
+
+  reconcile(account: MailAccount, reconcileLimit: number, signal?: AbortSignal): Promise<SyncResult> {
+    return this.syncMetadata(account, reconcileLimit, false, signal);
+  }
+
+  async backfill(account: MailAccount, beforeSequence: number, pageSize: number, signal?: AbortSignal): Promise<BackfillResult> {
+    return this.withMailbox(account, true, 1024 * 1024, async (client) => {
+      if (!client.mailbox || typeof client.mailbox === "boolean") throw new Error("无法读取邮箱状态");
+      if (beforeSequence <= 0 || client.mailbox.exists === 0) {
+        return { messages: [], remoteStates: [], nextCursor: null, complete: true, oldestReceivedAt: null };
+      }
+      const uidValidity = client.mailbox.uidValidity.toString();
+      if (account.uidValidity && account.uidValidity !== uidValidity) throw new Error("IMAP_UIDVALIDITY_CHANGED");
+      const end = Math.min(beforeSequence, client.mailbox.exists);
+      const start = Math.max(1, end - pageSize + 1);
+      const items = await this.fetchMetadata(client, `${start}:${end}`, false);
+      const messages = items.map((item) => metadata(item, account.mailbox, uidValidity));
+      return {
+        messages,
+        remoteStates: items.map(remoteState),
+        nextCursor: start > 1 ? start - 1 : null,
+        complete: start === 1,
+        oldestReceivedAt: messages.length ? messages.reduce((oldest, item) => item.receivedAt < oldest ? item.receivedAt : oldest, messages[0]!.receivedAt) : null
+      };
+    }, signal);
+  }
+
+  async fetchBody(account: MailAccount, uid: number, uidValidity: string, maxMessageBytes: number, signal?: AbortSignal): Promise<Pick<ParsedMessage, "textBody" | "htmlBody" | "snippet" | "hasAttachments" | "size" | "bodyStatus" | "bodyError">> {
+    return this.withMailbox(account, true, maxMessageBytes, async (client) => {
+      if (!client.mailbox || typeof client.mailbox === "boolean" || client.mailbox.uidValidity.toString() !== uidValidity) throw new Error("IMAP_UIDVALIDITY_CHANGED");
+      const item = await client.fetchOne(uid, { source: true, size: true }, { uid: true });
+      if (!item || !item.source) throw new Error("服务器未返回邮件正文");
+      const size = item.size || item.source.length;
+      if (size > maxMessageBytes) {
+        return {
+          textBody: null,
+          htmlBody: null,
+          snippet: "邮件正文超过本地大小限制，未下载。",
+          hasAttachments: false,
+          size,
+          bodyStatus: "failed",
+          bodyError: `邮件大小 ${size} 字节，超过限制 ${maxMessageBytes} 字节`
+        };
+      }
+      const parsed = await simpleParser(item.source, { skipHtmlToText: true, skipTextToHtml: true, skipImageLinks: true });
+      const textBody = parsed.text?.trim() || null;
+      return {
+        textBody,
+        htmlBody: typeof parsed.html === "string" ? parsed.html : null,
+        snippet: (textBody ?? parsed.subject ?? "").replace(/\s+/g, " ").trim().slice(0, 240),
+        hasAttachments: parsed.attachments.length > 0,
+        size,
+        bodyStatus: "fetched",
+        bodyError: null
+      };
+    }, signal);
+  }
+
+  async performOperation(account: MailAccount, operation: MailOperation, signal?: AbortSignal): Promise<void> {
+    await this.withMailbox(account, false, 1024 * 1024, async (client) => {
+      if (!client.mailbox || typeof client.mailbox === "boolean" || client.mailbox.uidValidity.toString() !== operation.uidValidity) throw new Error("IMAP_UIDVALIDITY_CHANGED");
+      if (operation.operation === "mark_read") await client.messageFlagsAdd(operation.uid, ["\\Seen"], { uid: true });
+      else if (operation.operation === "mark_unread") await client.messageFlagsRemove(operation.uid, ["\\Seen"], { uid: true });
+      else if (operation.operation === "star") await client.messageFlagsAdd(operation.uid, ["\\Flagged"], { uid: true });
+      else await client.messageFlagsRemove(operation.uid, ["\\Flagged"], { uid: true });
+    }, signal);
+  }
+
+  async createSubscription(_account: MailAccount): Promise<null> {
+    return null;
+  }
+
+  async renewSubscription(_account: MailAccount): Promise<null> {
+    return null;
+  }
+
+  async watch(account: MailAccount, onEvent: (reason: "exists" | "expunge" | "flags") => void, signal: AbortSignal, onReady?: () => void): Promise<void> {
     await assertAllowedMailHost(account.host, this.allowPrivateMailHosts, true);
-    const client = this.client(account, 1024 * 1024);
+    const client = this.client(account, 1024 * 1024, true);
+    let connectionError: Error | null = null;
+    const abort = () => client.close();
+    const onError = (error: Error) => { connectionError = error; };
+    client.on("error", onError);
+    client.on("exists", () => onEvent("exists"));
+    client.on("expunge", () => onEvent("expunge"));
+    client.on("flags", () => onEvent("flags"));
+    signal.addEventListener("abort", abort, { once: true });
     try {
+      if (signal.aborted) return;
       await client.connect();
-      const lock = await client.getMailboxLock(account.mailbox, { readOnly: true });
-      lock.release();
+      await client.mailboxOpen(account.mailbox, { readOnly: true });
+      console.log(JSON.stringify({ event: "imap_idle_connected", at: new Date().toISOString(), account_id: account.id, provider: account.provider }));
+      onReady?.();
+      if (signal.aborted) return;
+      await new Promise<void>((resolve) => client.once("close", resolve));
+      if (!signal.aborted) throw connectionError ?? new Error("IMAP IDLE connection closed");
     } finally {
-      if (client.usable) await client.logout();
+      signal.removeEventListener("abort", abort);
+      client.removeListener("error", onError);
+      if (client.usable) await client.logout().catch(() => undefined);
+      else client.close();
     }
   }
 
-  async sync(account: MailAccount, initialLimit: number, maxMessageBytes: number): Promise<SyncResult> {
+  private async syncMetadata(account: MailAccount, limit: number, initial: boolean, signal?: AbortSignal): Promise<SyncResult> {
+    return this.withMailbox(account, true, 1024 * 1024, async (client) => {
+      if (!client.mailbox || typeof client.mailbox === "boolean") throw new Error("无法读取邮箱状态");
+      const { exists, uidValidity } = client.mailbox;
+      const uidValidityText = uidValidity.toString();
+      const mailboxReset = account.uidValidity !== null && account.uidValidity !== uidValidityText;
+      const useInitialWindow = initial || mailboxReset || account.uidValidity === null;
+      const previousUid = mailboxReset ? 0 : account.lastUid;
+      if (!exists) {
+        return {
+          messages: [],
+          remoteStates: [],
+          lastUid: mailboxReset ? 0 : previousUid,
+          uidValidity: uidValidityText,
+          backfillCursor: null,
+          reconcileWindow: { minUid: 0, presentUids: [] }
+        };
+      }
+
+      const recentStart = Math.max(1, exists - limit + 1);
+      const recentItems = await this.fetchMetadata(client, `${recentStart}:*`, false);
+      const remoteStates = recentItems.map(remoteState);
+      const range = useInitialWindow ? `${recentStart}:*` : `${previousUid + 1}:*`;
+      const newItems = useInitialWindow ? recentItems : await this.fetchMetadata(client, range, true, limit);
+      const messages = newItems.filter((item) => item.uid > previousUid || useInitialWindow).map((item) => metadata(item, account.mailbox, uidValidityText));
+      const lastUid = messages.reduce((highest, item) => Math.max(highest, item.uid), previousUid);
+      return {
+        messages,
+        remoteStates,
+        lastUid,
+        uidValidity: uidValidityText,
+        backfillCursor: useInitialWindow ? (recentStart > 1 ? recentStart - 1 : null) : undefined,
+        reconcileWindow: recentItems.length ? { minUid: recentStart === 1 ? 0 : Math.min(...recentItems.map((item) => item.uid)), presentUids: recentItems.map((item) => item.uid) } : { minUid: 0, presentUids: [] }
+      };
+    }, signal);
+  }
+
+  private async fetchMetadata(client: ImapFlow, range: string, uid: boolean, limit?: number): Promise<ImapItem[]> {
+    const items: ImapItem[] = [];
+    for await (const item of client.fetch(
+      range,
+      { uid: true, size: true, envelope: true, internalDate: true, bodyStructure: true, flags: true },
+      { uid }
+    )) {
+      items.push(item as ImapItem);
+      if (limit && items.length >= limit) break;
+    }
+    return items;
+  }
+
+  private async withMailbox<T>(account: MailAccount, readOnly: boolean, maxMessageBytes: number, action: (client: ImapFlow) => Promise<T>, signal?: AbortSignal): Promise<T> {
     await assertAllowedMailHost(account.host, this.allowPrivateMailHosts, true);
     const client = this.client(account, maxMessageBytes);
+    const abort = () => client.close();
+    signal?.addEventListener("abort", abort, { once: true });
     try {
+      if (signal?.aborted) throw new Error("operation was aborted");
       await client.connect();
-      const lock = await client.getMailboxLock(account.mailbox, { readOnly: true });
+      if (signal?.aborted) throw new Error("operation was aborted");
+      const lock = await client.getMailboxLock(account.mailbox, { readOnly });
       try {
-        if (!client.mailbox || typeof client.mailbox === "boolean") throw new Error("无法读取邮箱状态");
-        const { exists, uidValidity } = client.mailbox;
-        const uidValidityText = uidValidity.toString();
-        const mailboxReset = account.uidValidity !== null && account.uidValidity !== uidValidityText;
-        const previousUid = mailboxReset ? 0 : account.lastUid;
-        if (!exists) return { messages: [], readStates: [], lastUid: 0, uidValidity: uidValidityText };
-
-        const flagItems = await client.fetchAll(
-          `${Math.max(1, exists - initialLimit + 1)}:*`,
-          { uid: true, flags: true },
-          { uid: false }
-        );
-        const readStates = flagItems.map((item) => ({
-          uid: item.uid,
-          isRead: item.flags?.has("\\Seen") ?? false
-        }));
-
-        const range = previousUid > 0
-          ? `${previousUid + 1}:*`
-          : `${Math.max(1, exists - initialLimit + 1)}:*`;
-        const messages: ParsedMessage[] = [];
-        let lastUid = previousUid;
-        let retainedBytes = 0;
-        const maxBatchBytes = Math.max(maxMessageBytes, 25 * 1024 * 1024);
-
-        const items = await client.fetchAll(
-          range,
-          { uid: true, size: true, envelope: true, internalDate: true, bodyStructure: true, flags: true },
-          { uid: previousUid > 0 }
-        );
-        for (const item of items) {
-          if (item.uid <= previousUid) continue;
-          if ((item.size || 0) > maxMessageBytes) {
-            messages.push(placeholder(item, "too_large", `邮件大小 ${item.size} 字节，超过限制 ${maxMessageBytes} 字节`));
-            lastUid = Math.max(lastUid, item.uid);
-            continue;
-          }
-          if (retainedBytes > 0 && retainedBytes + (item.size || 0) > maxBatchBytes) break;
-          try {
-            const sourceItem = await client.fetchOne(item.uid, { source: true }, { uid: true });
-            if (!sourceItem || !sourceItem.source) throw new Error("服务器未返回邮件正文");
-            const parsed = await simpleParser(sourceItem.source, {
-              skipHtmlToText: true,
-              skipTextToHtml: true,
-              skipImageLinks: true
-            });
-            const sender = firstAddress(parsed.from);
-            const text = parsed.text?.trim() || null;
-            const snippet = (text ?? parsed.subject ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
-            messages.push({
-              uid: item.uid,
-              messageId: parsed.messageId || item.envelope?.messageId || null,
-              subject: parsed.subject || item.envelope?.subject || "(无主题)",
-              fromName: sender.name,
-              fromAddress: sender.address,
-              toText: addressText(parsed.to),
-              receivedAt: new Date(item.internalDate ?? parsed.date ?? Date.now()).toISOString(),
-              textBody: text,
-              htmlBody: typeof parsed.html === "string" ? parsed.html : null,
-              snippet,
-              hasAttachments: parsed.attachments.length > 0,
-              isRead: item.flags?.has("\\Seen") ?? false,
-              size: item.size || sourceItem.source.length,
-              bodyStatus: "complete",
-              bodyError: null
-            });
-            retainedBytes += sourceItem.source.length;
-          } catch (error) {
-            messages.push(placeholder(item, "parse_error", error instanceof Error ? error.message : String(error)));
-          }
-          lastUid = Math.max(lastUid, item.uid);
-        }
-        return { messages, readStates, lastUid, uidValidity: uidValidityText };
+        return await action(client);
       } finally {
         lock.release();
       }
     } finally {
+      signal?.removeEventListener("abort", abort);
       if (client.usable) await client.logout();
     }
   }
 
-  private client(account: MailAccount, maxMessageBytes: number): ImapFlow {
+  private client(account: MailAccount, maxMessageBytes: number, idle = false): ImapFlow {
     return new ImapFlow({
       host: account.host,
       port: account.port,
       secure: account.secure,
       doSTARTTLS: account.secure ? undefined : true,
-      auth: {
-        user: account.username,
-        pass: decryptSecret(account.encryptedPassword, this.encryptionKey)
-      },
+      auth: { user: account.username, pass: decryptSecret(account.encryptedPassword, this.encryptionKey) },
       logger: false,
+      qresync: idle,
+      maxIdleTime: idle ? 25 * 60_000 : undefined,
+      missingIdleCommand: idle ? "NOOP" : undefined,
       tls: { lookup: createMailHostLookup(this.allowPrivateMailHosts, true) },
       connectionTimeout: 15_000,
       greetingTimeout: 15_000,
@@ -171,3 +258,6 @@ export class ImapMailSyncer implements MailSyncer {
     });
   }
 }
+
+// Backward-compatible export for existing imports.
+export { ImapMailProvider as ImapMailSyncer };
