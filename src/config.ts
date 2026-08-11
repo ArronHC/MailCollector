@@ -55,7 +55,7 @@ export const config = {
   databasePath: path.resolve(process.env.DATABASE_PATH ?? "./data/mail-collector.db"),
   encryptionKey: encryptionKey(),
   apiKey: requiredApiKey(),
-  serviceVersion: process.env.MAIL_COLLECTOR_VERSION?.trim() || "0.2.0",
+  serviceVersion: process.env.MAIL_COLLECTOR_VERSION?.trim() || "0.3.1",
   registrationInviteCode: requiredInviteCode(),
   allowRemoteClients: boolean("ALLOW_REMOTE_CLIENTS", false),
   allowedRemoteOrigins: stringList("ALLOWED_REMOTE_ORIGINS"),

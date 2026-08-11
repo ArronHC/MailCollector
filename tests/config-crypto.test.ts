@@ -11,7 +11,8 @@ test("encrypts cloud configuration with an administrator-provided key", async ()
   assert.notEqual(first.ciphertext, second.ciphertext);
   assert.deepEqual(await decryptConfig(first, key), value);
   await assert.rejects(() => decryptConfig(first, "34".repeat(32)), /密钥不正确/);
-  await assert.rejects(() => decryptConfig({ ...first, ciphertext: `${first.ciphertext.slice(0, -1)}A` }, key), /配置已损坏/);
+  const replacement = first.ciphertext[0] === "A" ? "B" : "A";
+  await assert.rejects(() => decryptConfig({ ...first, ciphertext: `${replacement}${first.ciphertext.slice(1)}` }, key), /配置已损坏/);
 });
 
 test("rejects malformed administrator sync keys", async () => {
