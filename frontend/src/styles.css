@@ -167,7 +167,7 @@ html[data-transition="auth"] .login-page, html[data-transition="auth"] .app-shel
 .account-item { grid-template-columns: 36px minmax(0, 1fr) 28px; height: 42px; padding: 0 9px; }
 .account-item:hover, .navigation-item:hover, .label-row:hover { color: var(--ink); background: var(--paper-soft); }
 .account-item.active, .navigation-item.active, .label-row.active { color: var(--accent-dark); background: var(--accent-soft); font-weight: 650; }
-.account-item svg { width: 23px; height: 23px; }
+  .account-item svg, .account-item img { width: 23px; height: 23px; object-fit: contain; }
 .account-item span { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .account-item b, .navigation-item b, .label-row b { color: inherit; font-size: 11px; font-weight: 650; text-align: right; }
 .empty-account { width: calc(100% - 12px); min-height: 40px; margin: 5px 6px; border: 1px dashed #bfc5be; border-radius: 13px; color: var(--accent); background: transparent; font-size: 12px; cursor: pointer; }
@@ -223,7 +223,7 @@ input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var
 .mail-subject { margin-top: 3px; overflow: hidden; color: #26342d; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .mail-preview { margin-top: 3px; overflow: hidden; color: #7a827d; font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .source-badge { display: inline-flex; height: 20px; align-items: center; gap: 4px; margin-top: 6px; padding: 0 7px 0 4px; border-radius: 7px; font-size: 9px; font-weight: 650; }
-.source-badge svg { width: 14px; height: 14px; }
+  .source-badge svg, .source-badge img { width: 14px; height: 14px; object-fit: contain; }
 .source-badge.outlook { color: #326aa1; background: #e7f0f7; }.source-badge.gmail, .source-badge.netease { color: #a34e43; background: #f6e8e4; }.source-badge.qq { color: #9a6d26; background: #f6eedb; }.source-badge.icloud, .source-badge.other { color: #61716a; background: #e9eeeb; }
 .row-label { display: inline-flex; height: 19px; align-items: center; margin: 6px 0 0 4px; padding: 0 6px; border-radius: 6px; color: #69736e; background: #ebece7; font-size: 9px; vertical-align: top; }
 .attachment-icon { display: inline-block; width: 12px; height: 12px; margin: 0 0 -2px 5px; color: #7b847e; }

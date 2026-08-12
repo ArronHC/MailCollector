@@ -1,6 +1,7 @@
 node_modules/
 dist/
 public/
+!frontend/public/
 release/
 src-tauri/target/
 src-tauri/gen/
