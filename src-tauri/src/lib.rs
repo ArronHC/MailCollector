@@ -37,15 +37,6 @@ struct RuntimeSettings {
     max_message_bytes: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClientBackendSettings {
-    mode: String,
-    server_url: String,
-    api_key: Option<String>,
-    sync_key: Option<String>,
-}
-
 struct SidecarProcess {
     child: Child,
     port: u16,
@@ -120,65 +111,6 @@ fn runtime_settings(app_data: &Path) -> Result<RuntimeSettings, String> {
     let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
     fs::write(settings_path, format!("{content}\n")).map_err(|error| error.to_string())?;
     Ok(settings)
-}
-
-#[tauri::command]
-fn load_client_backend_settings(
-    app: tauri::AppHandle,
-) -> Result<Option<ClientBackendSettings>, String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let path = app_data.join("client-backend-settings.json");
-    let backup_path = app_data.join("client-backend-settings.json.bak");
-    let readable_path = if path.exists() {
-        path
-    } else if backup_path.exists() {
-        backup_path
-    } else {
-        return Ok(None);
-    };
-    let content = fs::read_to_string(readable_path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&content)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn save_client_backend_settings(
-    app: tauri::AppHandle,
-    settings: ClientBackendSettings,
-) -> Result<(), String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    fs::create_dir_all(&app_data).map_err(|error| error.to_string())?;
-    let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
-    let path = app_data.join("client-backend-settings.json");
-    let backup_path = app_data.join("client-backend-settings.json.bak");
-    let temporary_path = app_data.join("client-backend-settings.json.tmp");
-    fs::write(&temporary_path, format!("{content}\n")).map_err(|error| error.to_string())?;
-    if !path.exists() && backup_path.exists() {
-        fs::rename(&backup_path, &path).map_err(|error| error.to_string())?;
-    }
-    if backup_path.exists() {
-        fs::remove_file(&backup_path).map_err(|error| error.to_string())?;
-    }
-    if path.exists() {
-        fs::rename(&path, &backup_path).map_err(|error| error.to_string())?;
-    }
-    if let Err(error) = fs::rename(&temporary_path, &path) {
-        if backup_path.exists() {
-            let _ = fs::rename(&backup_path, &path);
-        }
-        return Err(error.to_string());
-    }
-    if backup_path.exists() {
-        let _ = fs::remove_file(backup_path);
-    }
-    Ok(())
 }
 
 fn migrate_database(app_data: &Path, settings: &RuntimeSettings) -> Result<PathBuf, String> {
@@ -320,10 +252,7 @@ pub fn run() {
     let exit_state = Arc::clone(&sidecar_state);
 
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            load_client_backend_settings,
-            save_client_backend_settings
-        ])
+        .invoke_handler(tauri::generate_handler![])
         .setup(move |app| {
             let app_data = app
                 .path()

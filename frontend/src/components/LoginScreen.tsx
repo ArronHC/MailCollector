@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, AtSign, Eye, EyeOff, Inbox, KeyRound, LockKeyhole, Settings, ShieldCheck, Sparkles, TicketCheck, UserPlus } from "lucide-react";
+import { ArrowRight, AtSign, Eye, EyeOff, Inbox, KeyRound, LockKeyhole, ShieldCheck, Sparkles, TicketCheck, UserPlus } from "lucide-react";
 import { CollectorMark } from "./BrandIcons";
 
 type AuthMode = "login" | "register" | "key";
@@ -9,12 +9,10 @@ interface LoginScreenProps {
   onSignIn: (email: string, password: string) => Promise<void>;
   onRegister: (email: string, password: string, inviteCode: string) => Promise<void>;
   onKeySignIn: (key: string) => Promise<void>;
-  remoteBackend: boolean;
-  onBackendSettings: () => void;
 }
 
-export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn, remoteBackend, onBackendSettings }: LoginScreenProps) {
-  const [mode, setMode] = useState<AuthMode>(remoteBackend ? "key" : registered ? "login" : "register");
+export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn }: LoginScreenProps) {
+  const [mode, setMode] = useState<AuthMode>(registered ? "login" : "register");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -25,9 +23,9 @@ export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn, rem
   const [error, setError] = useState("");
 
   useEffect(() => {
-    setMode(remoteBackend ? "key" : registered ? "login" : "register");
+    setMode(registered ? "login" : "register");
     setError("");
-  }, [registered, remoteBackend]);
+  }, [registered]);
 
   const canSubmit = mode === "key"
     ? Boolean(accessKey.trim())
@@ -65,7 +63,7 @@ export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn, rem
   const content = mode === "register"
     ? { icon: <UserPlus />, kicker: "邀请注册", title: "创建本地管理员", description: "使用邮箱和有效邀请码创建唯一的本地登录账户。", action: busy ? "正在创建" : "创建并进入" }
     : mode === "key"
-       ? { icon: <KeyRound />, kicker: remoteBackend ? "远端服务器" : "兼容登录", title: "使用启动密钥", description: remoteBackend ? "输入自托管服务器配置的 API Key。" : "输入服务启动时配置的 API Key。密钥仅保存在当前浏览器会话中。", action: busy ? "正在验证" : "使用密钥进入" }
+      ? { icon: <KeyRound />, kicker: "兼容登录", title: "使用启动密钥", description: "输入服务启动时配置的 API Key。密钥仅保存在当前浏览器会话中。", action: busy ? "正在验证" : "使用密钥进入" }
       : { icon: <LockKeyhole />, kicker: "欢迎回来", title: "进入你的邮件空间", description: "使用注册邮箱和密码登录本地管理员账户。", action: busy ? "正在登录" : "进入收件箱" };
 
   return <main className="login-page">
@@ -74,11 +72,11 @@ export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn, rem
       <div className="login-copy">
         <span className="login-eyebrow"><Sparkles /> 一个安静的收件空间</span>
         <h1>所有邮箱，<br />自然汇聚在一起。</h1>
-        <p>减少切换，保留专注。邮件、草稿与标签都在你选择的个人后端中清晰呈现。</p>
+        <p>减少切换，保留专注。邮件、草稿与标签都清晰呈现。</p>
       </div>
       <div className="login-features">
         <div><Inbox /><span><strong>统一收件箱</strong><small>集中浏览多个邮箱账户</small></span></div>
-        <div><ShieldCheck /><span><strong>{remoteBackend ? "自托管同步" : "本地优先"}</strong><small>{remoteBackend ? "多台设备连接同一私人服务器" : "凭据加密保存在你的设备"}</small></span></div>
+        <div><ShieldCheck /><span><strong>本地优先</strong><small>凭据加密保存在你的设备</small></span></div>
       </div>
       <div className="login-orbit orbit-one" /><div className="login-orbit orbit-two" />
     </section>
@@ -98,13 +96,12 @@ export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn, rem
         <div className={`login-error${error ? " visible" : ""}`} aria-live="polite">{error}</div>
         <button className="login-submit" type="submit" disabled={!canSubmit || busy}><span>{content.action}</span><ArrowRight /></button>
         <div className="login-alternatives">
-          {!remoteBackend && mode === "login" ? <button type="button" onClick={() => switchMode("key")}>使用启动密钥登录</button> : null}
-          {!remoteBackend && mode === "key" && registered ? <button type="button" onClick={() => switchMode("login")}>使用管理员账户登录</button> : null}
-          {!remoteBackend && mode === "key" && !registered ? <button type="button" onClick={() => switchMode("register")}>返回首次注册</button> : null}
-          {!remoteBackend && mode === "register" ? <button type="button" onClick={() => switchMode("key")}>暂时使用启动密钥登录</button> : null}
-          <button type="button" onClick={onBackendSettings}><Settings /> 连接设置</button>
+          {mode === "login" ? <button type="button" onClick={() => switchMode("key")}>使用启动密钥登录</button> : null}
+          {mode === "key" && registered ? <button type="button" onClick={() => switchMode("login")}>使用管理员账户登录</button> : null}
+          {mode === "key" && !registered ? <button type="button" onClick={() => switchMode("register")}>返回首次注册</button> : null}
+          {mode === "register" ? <button type="button" onClick={() => switchMode("key")}>暂时使用启动密钥登录</button> : null}
         </div>
-        <footer><ShieldCheck /> {mode === "register" ? "邀请码验证通过后注册，完成后关闭新账户注册" : "安全连接至当前 Mail Collector 服务"}</footer>
+        <footer><ShieldCheck /> {mode === "register" ? "邀请码验证通过后注册，完成后关闭新账户注册" : "安全连接至本地邮件服务"}</footer>
       </form>
     </section>
   </main>;

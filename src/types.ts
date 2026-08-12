@@ -33,26 +33,6 @@ export interface PublicMailAccount extends Omit<MailAccount, "encryptedPassword"
   unreadCount: number;
 }
 
-export interface SyncedAccountConfiguration {
-  syncId: string;
-  name: string;
-  email: string;
-  host: string;
-  port: number;
-  secure: boolean;
-  username: string;
-  encryptedPassword: string;
-  mailbox: string;
-  enabled: boolean;
-  syncUpdatedAt: string;
-}
-
-export interface CloudConfigEnvelope {
-  version: string;
-  iv: string;
-  ciphertext: string;
-}
-
 export interface ParsedMessage {
   uid: number;
   providerMessageId: string;
