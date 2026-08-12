@@ -33,6 +33,7 @@ export class MailWorker {
         jobs.push(job);
       }
       await Promise.all(jobs.map((job) => this.execute(job)));
+      await this.syncService.prefetchRecentBodies().catch(() => undefined);
     })().finally(() => { this.drainPromise = null; });
     return this.drainPromise;
   }

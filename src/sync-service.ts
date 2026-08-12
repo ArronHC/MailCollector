@@ -15,6 +15,8 @@ type SyncServiceOptions = {
   sleep?: (milliseconds: number) => Promise<void>;
   random?: () => number;
   providerConcurrency?: number;
+  bodyPrefetchPerAccount?: number;
+  bodyPrefetchPerDrain?: number;
 };
 
 export class SyncService {
@@ -30,6 +32,8 @@ export class SyncService {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly random: () => number;
   private readonly providerLimiter: ProviderConcurrencyLimiter;
+  private readonly bodyPrefetchPerAccount: number;
+  private readonly bodyPrefetchPerDrain: number;
   private readonly stopController = new AbortController();
   private stopped = false;
 
@@ -54,6 +58,8 @@ export class SyncService {
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.random = options.random ?? Math.random;
     this.providerLimiter = new ProviderConcurrencyLimiter(options.providerConcurrency ?? 3);
+    this.bodyPrefetchPerAccount = options.bodyPrefetchPerAccount ?? 10;
+    this.bodyPrefetchPerDrain = options.bodyPrefetchPerDrain ?? 3;
   }
 
   async syncAccount(id: number, requestedType?: "initial" | "incremental" | "reconcile", jobId?: number): Promise<{ inserted: number; mailboxReset: boolean }> {
@@ -150,23 +156,23 @@ export class SyncService {
     }
   }
 
-  async fetchMessageBody(messageId: number): Promise<void> {
+  async fetchMessageBody(messageId: number): Promise<boolean> {
     this.database.reclaimStaleBodyFetches(new Date(Date.now() - this.leaseMs).toISOString());
     const reference = this.database.getMessageProviderRef(messageId);
-    if (!reference || reference.bodyStatus === "fetched" || reference.bodyStatus === "fetching" || (reference.bodyStatus === "failed" && !reference.bodyRetryable)) return;
+    if (!reference || reference.bodyStatus === "fetched" || reference.bodyStatus === "fetching" || (reference.bodyStatus === "failed" && !reference.bodyRetryable)) return false;
     const account = this.database.getAccount(reference.accountId);
-    if (!account || !account.enabled) return;
+    if (!account || !account.enabled) return false;
     if (reference.size > this.maxMessageBytes) {
       this.database.markBodyFailed(messageId, `邮件大小 ${reference.size} 字节，超过限制 ${this.maxMessageBytes} 字节`, false);
-      return;
+      return false;
     }
     const owner = `${this.ownerPrefix}:body:${messageId}`;
-    if (!this.database.acquireAccountLease(account.id, owner, this.leaseMs)) return;
+    if (!this.database.acquireAccountLease(account.id, owner, this.leaseMs)) return false;
     const stopHeartbeat = this.startAccountHeartbeat(account.id, owner);
     if (!this.database.markBodyFetching(messageId)) {
       stopHeartbeat();
       this.database.releaseAccountLease(account.id, owner);
-      return;
+      return false;
     }
     try {
       if (!("fetchBody" in this.provider)) throw new Error("当前 Provider 不支持按需正文获取");
@@ -174,6 +180,7 @@ export class SyncService {
       if (!this.database.hasAccountLease(account.id, owner)) throw new Error("账号同步租约已失效");
       const body = await this.providerRequest(() => provider.fetchBody(account, reference.uid, reference.uidValidity, this.maxMessageBytes, this.stopController.signal), { accountId: account.id, provider: account.provider });
       this.database.saveMessageBody(messageId, body, owner);
+      return true;
     } catch (error) {
       const classified = classifyProviderError(error);
       if (classified.kind === "cursor_invalid") {
@@ -187,6 +194,21 @@ export class SyncService {
       stopHeartbeat();
       this.database.releaseAccountLease(account.id, owner);
     }
+  }
+
+  async prefetchRecentBodies(): Promise<number> {
+    if (this.stopped || this.bodyPrefetchPerAccount <= 0 || this.bodyPrefetchPerDrain <= 0) return 0;
+    const ids = this.database.listPendingBodyFetchIds(this.bodyPrefetchPerAccount, this.bodyPrefetchPerDrain, this.maxMessageBytes);
+    let fetched = 0;
+    for (const id of ids) {
+      if (this.stopped) break;
+      try {
+        if (await this.fetchMessageBody(id)) fetched += 1;
+      } catch {
+        // 单个正文获取失败不阻塞后续预取
+      }
+    }
+    return fetched;
   }
 
   async processOperation(accountId: number, jobId?: number): Promise<void> {

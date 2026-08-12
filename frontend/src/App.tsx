@@ -237,6 +237,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
       const { message } = await api.message(id);
       if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
       setMailDetail(message);
+      if (message.bodyStatus !== "fetched" && message.kind === "received") pollMessageBody(id, requestId);
       if (!message.isRead && message.kind === "received") {
         const result = await api.updateMessage(id, { isRead: true });
         if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
@@ -251,6 +252,21 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
         readerLoadingRef.current = false;
         setReaderLoading(false);
       }
+    }
+  }
+
+  async function pollMessageBody(id: number, requestId: number, attempt = 0) {
+    if (attempt >= 20) return;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
+    try {
+      const { message } = await api.message(id);
+      if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
+      setMailDetail(message);
+      if (message.bodyStatus === "fetched" || message.bodyStatus === "failed") return;
+      void pollMessageBody(id, requestId, attempt + 1);
+    } catch {
+      void pollMessageBody(id, requestId, attempt + 1);
     }
   }
 

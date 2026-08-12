@@ -849,6 +849,21 @@ export class MailDatabase {
     return row ? { ...row, bodyRetryable: Boolean(row.bodyRetryable) } : null;
   }
 
+  listPendingBodyFetchIds(perAccount: number, limit: number, maxSize: number): number[] {
+    return (this.db.prepare(`
+      SELECT id FROM (
+        SELECT id, received_at,
+          ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY received_at DESC) AS rn
+        FROM messages
+        WHERE kind = 'received' AND provider_deleted = 0 AND local_deleted = 0
+          AND body_status = 'not_fetched' AND size <= @maxSize
+      )
+      WHERE rn <= @perAccount
+      ORDER BY received_at DESC
+      LIMIT @limit
+    `).all({ perAccount, limit, maxSize }) as Array<{ id: number }>).map((row) => row.id);
+  }
+
   markBodyFetching(id: number): boolean {
     return this.db.prepare(`
       UPDATE messages SET body_status = 'fetching', body_error = NULL, body_retryable = 1, body_fetch_started_at = ?

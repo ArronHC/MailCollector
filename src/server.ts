@@ -88,7 +88,9 @@ const syncService = new SyncService(database, syncer, config.initialSyncLimit, c
   activeReconcileMinutes: config.activeReconcileMinutes,
   normalReconcileMinutes: config.normalReconcileMinutes,
   inactiveReconcileMinutes: config.inactiveReconcileMinutes,
-  providerConcurrency: config.providerMaxConcurrency
+  providerConcurrency: config.providerMaxConcurrency,
+  bodyPrefetchPerAccount: config.bodyPrefetchPerAccount,
+  bodyPrefetchPerDrain: config.bodyPrefetchPerDrain
 });
 const mailWorker = new MailWorker(database, syncService, config.syncLeaseSeconds * 1000);
 const idleService = config.imapIdleEnabled ? new ImapIdleService(database, syncService, syncer, {
@@ -399,14 +401,13 @@ app.get("/api/messages", (request, response, next) => {
   }
 });
 
-app.get("/api/messages/:id", async (request, response, next) => {
+app.get("/api/messages/:id", (request, response, next) => {
   try {
     const id = z.coerce.number().int().positive().parse(request.params.id);
-    let message = database.getMessage(id) as { bodyStatus?: string } | null;
+    const message = database.getMessage(id) as { bodyStatus?: string } | null;
     if (!message) return response.status(404).json({ error: "邮件不存在" });
     if (message.bodyStatus === "not_fetched" || message.bodyStatus === "failed") {
-      await syncService.fetchMessageBody(id).catch((error) => console.error(error));
-      message = database.getMessage(id) as { bodyStatus?: string } | null;
+      void syncService.fetchMessageBody(id).catch((error) => console.error(error));
     }
     response.json({ message });
   } catch (error) {
