@@ -51,7 +51,7 @@ export const config = {
   databasePath: path.resolve(process.env.DATABASE_PATH ?? "./data/mail-collector.db"),
   encryptionKey: encryptionKey(),
   apiKey: requiredApiKey(),
-  serviceVersion: process.env.MAIL_COLLECTOR_VERSION?.trim() || "0.4.1",
+  serviceVersion: process.env.MAIL_COLLECTOR_VERSION?.trim() || "0.5.0",
   registrationInviteCode: requiredInviteCode(),
   allowPrivateMailHosts: boolean("ALLOW_PRIVATE_MAIL_HOSTS", false),
   syncIntervalMinutes: integer("SYNC_INTERVAL_MINUTES", 5),

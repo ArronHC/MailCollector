@@ -6,8 +6,13 @@ export function TopSearchBar({ value, onChange }: { value: string; onChange: (va
   return <label className="top-search"><Search /><input value={value} onChange={(event) => onChange(event.target.value)} placeholder="搜索邮件" aria-label="搜索邮件" />{value ? <button onClick={() => onChange("")} aria-label="清空搜索">×</button> : null}</label>;
 }
 
-export function SyncStatus({ accountCount, syncing, error, onSync }: { accountCount: number; syncing: boolean; error: string; onSync: () => void }) {
-  return <button className={`sync-status${error ? " error" : ""}`} onClick={onSync} disabled={syncing} title={error || "同步全部邮箱"}>{syncing ? <LoaderCircle className="spinning" /> : error ? <TriangleAlert /> : <CheckCircle2 fill="#1e8e3e" color="#fff" />}<span>{syncing ? "正在同步邮箱" : error ? "同步出现错误" : `已连接 ${accountCount} 个邮箱`}</span></button>;
+export function SyncStatus({ accountCount, syncing, error, lastSyncLabel, onSync }: { accountCount: number; syncing: boolean; error: string; lastSyncLabel: string; onSync: () => void }) {
+  const title = error ? error : syncing ? "正在同步邮箱" : `已连接 ${accountCount} 个邮箱 · 上次同步 ${lastSyncLabel}。点击可立即同步。`;
+  return <button className={`sync-status${error ? " error" : ""}`} onClick={onSync} disabled={syncing} title={title}>{syncing ? <LoaderCircle className="spinning" /> : error ? <TriangleAlert /> : <CheckCircle2 fill="#1e8e3e" color="#fff" />}<span>{syncing ? "正在同步邮箱" : error ? "同步出现错误" : `已同步 ${lastSyncLabel}`}</span></button>;
+}
+
+export function SyncProgressBar({ active }: { active: boolean }) {
+  return active ? <div className="sync-progress" aria-hidden="true" /> : null;
 }
 
 export function ClassifyButton({ classifying, onClassify }: { classifying: boolean; onClassify: () => void }) {
@@ -27,6 +32,7 @@ interface TopBarProps {
   syncing: boolean;
   classifying: boolean;
   error: string;
+  lastSyncLabel: string;
   onSearch: (value: string) => void;
   onSync: () => void;
   onClassify: () => void;
@@ -37,6 +43,6 @@ interface TopBarProps {
   onLogout: () => void;
 }
 
-export function TopBar({ search, onSearch, accountCount, syncing, classifying, error, backendLabel, onSync, onClassify, onToggleSidebar, onHelp, onManageAccounts, onLogout }: TopBarProps) {
-  return <header className="top-bar"><div className="brand-area"><button className="icon-button menu-button interactive" aria-label="折叠侧栏" onClick={onToggleSidebar}><Menu /></button><div className="mail-brand"><CollectorMark /><div><span>Mail Collector</span><small>聚合邮件空间</small></div></div></div><div className="top-main"><TopSearchBar value={search} onChange={onSearch} /><div className="top-right"><ClassifyButton classifying={classifying} onClassify={onClassify} /><SyncStatus accountCount={accountCount} syncing={syncing} error={error} onSync={onSync} /><UserActions backendLabel={backendLabel} onHelp={onHelp} onManageAccounts={onManageAccounts} onLogout={onLogout} /></div></div></header>;
+export function TopBar({ search, onSearch, accountCount, syncing, classifying, error, lastSyncLabel, backendLabel, onSync, onClassify, onToggleSidebar, onHelp, onManageAccounts, onLogout }: TopBarProps) {
+  return <header className="top-bar"><div className="brand-area"><button className="icon-button menu-button interactive" aria-label="折叠侧栏" onClick={onToggleSidebar}><Menu /></button><div className="mail-brand"><CollectorMark /><div><span>Mail Collector</span><small>聚合邮件空间</small></div></div></div><div className="top-main"><TopSearchBar value={search} onChange={onSearch} /><div className="top-right"><ClassifyButton classifying={classifying} onClassify={onClassify} /><SyncStatus accountCount={accountCount} syncing={syncing} error={error} lastSyncLabel={lastSyncLabel} onSync={onSync} /><UserActions backendLabel={backendLabel} onHelp={onHelp} onManageAccounts={onManageAccounts} onLogout={onLogout} /></div></div></header>;
 }

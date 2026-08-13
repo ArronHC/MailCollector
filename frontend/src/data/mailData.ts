@@ -23,6 +23,7 @@ export interface MailAccount {
   mailbox: string;
   enabled: boolean;
   lastSyncAt: string | null;
+  lastSuccessfulSyncAt: string | null;
   lastError: string | null;
   status: "ready" | "syncing" | "error" | "disabled" | "degraded" | "reauth_required" | "backfilling";
   messageCount: number;
@@ -129,4 +130,20 @@ export function formatDetailTime(value: string): string {
   const diff = Date.now() - date.getTime();
   const relative = diff >= 0 && diff < 86_400_000 ? `（${Math.max(1, Math.floor(diff / 3_600_000))} 小时前）` : "";
   return `${date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}${relative}`;
+}
+
+export function formatLastSync(accounts: Array<{ lastSuccessfulSyncAt: string | null }>): string {
+  let latest = 0;
+  for (const account of accounts) {
+    const value = account.lastSuccessfulSyncAt ? Date.parse(account.lastSuccessfulSyncAt) : 0;
+    if (value > latest) latest = value;
+  }
+  if (!latest) return "尚未同步";
+  const date = new Date(latest);
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) return `今天 ${date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return "昨天";
+  return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
