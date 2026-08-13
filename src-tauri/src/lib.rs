@@ -90,7 +90,7 @@ fn runtime_settings(app_data: &Path) -> Result<RuntimeSettings, String> {
             .get("REGISTRATION_INVITE_CODE")
             .filter(|value| value.len() >= 12)
             .cloned()
-            .unwrap_or_else(|| "MC-2026-7F4K9Q2P".to_string()),
+            .unwrap_or_else(|| random_hex(8)),
         allow_private_mail_hosts: legacy
             .get("ALLOW_PRIVATE_MAIL_HOSTS")
             .cloned()
