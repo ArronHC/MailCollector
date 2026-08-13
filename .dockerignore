@@ -1,0 +1,14 @@
+node_modules
+dist
+/public
+/data
+.git
+.gitignore
+src-tauri
+tests
+tmp
+docs
+*.log
+.env
+.env.example
+.mindfs
