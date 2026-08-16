@@ -163,6 +163,13 @@ mod tests {
     }
 
     #[test]
+    fn dpapi_round_trip_preserves_unicode() {
+        let plaintext = "收信台-密钥-🔐";
+        let protected = protect(plaintext).expect("protect unicode secret");
+        assert_eq!(unprotect(&protected).expect("unprotect unicode secret"), plaintext);
+    }
+
+    #[test]
     fn invalid_protected_value_is_rejected() {
         assert!(unprotect("not-hex").is_err());
     }
