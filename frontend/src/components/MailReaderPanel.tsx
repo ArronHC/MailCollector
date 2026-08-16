@@ -40,16 +40,29 @@ export function MailHeader({ mail, onStar, onReply }: { mail: MailDetail; onStar
   return <div className="mail-reader-header"><div className="reader-title"><h2>{mail.subject || "(无主题)"}</h2></div><div className="reader-context"><span>{folderName(mail)}</span>{mail.labels.map((label) => <span className="reader-label" key={label.id}>{label.name}</span>)}</div><SenderInfo mail={mail} onStar={onStar} onReply={onReply} /></div>;
 }
 
-function messageDocument(html: string): string {
-  const securityHead = `<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; img-src data: cid: http: https:; style-src 'unsafe-inline' http: https:; font-src data: http: https:; media-src data: cid: http: https:; frame-src data: http: https:; form-action 'none'; base-uri http: https:">`;
+function messageDocument(html: string, allowRemoteImages: boolean): string {
+  const imageSources = allowRemoteImages ? "data: cid: http: https:" : "data: cid:";
+  const securityHead = `<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; img-src ${imageSources}; style-src 'unsafe-inline'; font-src data:; media-src data: cid:; frame-src 'none'; form-action 'none'; base-uri 'none'">`;
   if (/<head\b[^>]*>/i.test(html)) return html.replace(/<head\b[^>]*>/i, (head) => `${head}${securityHead}`);
   if (/<html\b[^>]*>/i.test(html)) return html.replace(/<html\b[^>]*>/i, (root) => `${root}<head><meta charset="utf-8">${securityHead}</head>`);
   return `<!doctype html><html><head><meta charset="utf-8">${securityHead}</head><body>${html}</body></html>`;
 }
 
+function containsRemoteImages(html: string): boolean {
+  return /<(?:img|source)\b[^>]*(?:src|srcset)\s*=\s*["']?\s*https?:\/\//i.test(html)
+    || /\bbackground\s*=\s*["']?\s*https?:\/\//i.test(html)
+    || /url\(\s*["']?\s*https?:\/\//i.test(html);
+}
+
 export function RealEmailContent({ mail }: { mail: MailDetail }) {
+  const [remoteImagesAllowed, setRemoteImagesAllowed] = useState(false);
+  useEffect(() => setRemoteImagesAllowed(false), [mail.id]);
+
   if (mail.bodyStatus !== "fetched") return <div className="real-email-card body-unavailable"><strong>{mail.bodyStatus === "fetching" ? "正在获取邮件正文" : mail.bodyStatus === "not_fetched" ? "邮件正文尚未下载" : "邮件正文获取失败"}</strong><p>{mail.bodyError || mail.snippet || "暂无可显示的正文。"}</p></div>;
-  if (mail.htmlBody) return <div className="real-email-card"><iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody)} title="邮件正文" /></div>;
+  if (mail.htmlBody) {
+    const hasRemoteImages = containsRemoteImages(mail.htmlBody);
+    return <div className="real-email-card">{hasRemoteImages && !remoteImagesAllowed ? <div className="body-unavailable"><strong>已阻止远程图片</strong><p>远程图片可能用于跟踪邮件打开时间和网络地址。</p><button className="interactive" type="button" onClick={() => setRemoteImagesAllowed(true)}>显示这封邮件的远程图片</button></div> : null}<iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody, remoteImagesAllowed)} title="邮件正文" /></div>;
+  }
   return <div className="real-email-card plain-message">{mail.textBody || mail.snippet || "这封邮件没有可显示的正文。"}</div>;
 }
 

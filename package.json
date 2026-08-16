@@ -13,11 +13,11 @@
     "typecheck:server": "tsc --noEmit",
     "typecheck:web": "tsc -p frontend/tsconfig.json --noEmit",
     "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",
-    "build:desktop": "npm run build && npm run prepare:desktop-runtime",
+    "build:desktop": "npm run build && npm run prepare-desktop-runtime",
     "desktop": "tauri dev",
     "dist:win": "tauri build --bundles nsis",
     "start": "node dist/server.js",
-    "test": "node --import tsx --test tests/**/*.test.ts"
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
