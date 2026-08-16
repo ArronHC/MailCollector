@@ -41,7 +41,7 @@ export function MailHeader({ mail, onStar, onReply }: { mail: MailDetail; onStar
 }
 
 function messageDocument(html: string): string {
-  const securityHead = `<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; img-src data: cid: http: https:; style-src 'unsafe-inline' http: https:; font-src data: http: https:; media-src data: cid: http: https:; frame-src data: http: https:; form-action 'none'; base-uri http: https:">`;
+  const securityHead = `<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; font-src data:; media-src data: cid:; frame-src 'none'; form-action 'none'; base-uri 'none'">`;
   if (/<head\b[^>]*>/i.test(html)) return html.replace(/<head\b[^>]*>/i, (head) => `${head}${securityHead}`);
   if (/<html\b[^>]*>/i.test(html)) return html.replace(/<html\b[^>]*>/i, (root) => `${root}<head><meta charset="utf-8">${securityHead}</head>`);
   return `<!doctype html><html><head><meta charset="utf-8">${securityHead}</head><body>${html}</body></html>`;
