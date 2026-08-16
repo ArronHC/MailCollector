@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { config } from "./config.js";
 import type { MailDatabase, MailJob } from "./database.js";
 import { classifyProviderError, DeferredJobError, retryDelayMs } from "./provider-errors.js";
 import type { SyncService } from "./sync-service.js";
@@ -12,7 +13,7 @@ export class MailWorker {
     private readonly database: MailDatabase,
     private readonly syncService: SyncService,
     private readonly leaseMs: number,
-    private readonly concurrency = 3
+    private readonly concurrency = config.providerMaxConcurrency
   ) {}
 
   async runOnce(): Promise<boolean> {
