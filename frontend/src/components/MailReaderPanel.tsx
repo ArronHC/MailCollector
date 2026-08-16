@@ -48,14 +48,20 @@ function messageDocument(html: string, allowRemoteImages: boolean): string {
   return `<!doctype html><html><head><meta charset="utf-8">${securityHead}</head><body>${html}</body></html>`;
 }
 
+function containsRemoteImages(html: string): boolean {
+  return /<(?:img|source)\b[^>]*(?:src|srcset)\s*=\s*["']?\s*https?:\/\//i.test(html)
+    || /\bbackground\s*=\s*["']?\s*https?:\/\//i.test(html)
+    || /url\(\s*["']?\s*https?:\/\//i.test(html);
+}
+
 export function RealEmailContent({ mail }: { mail: MailDetail }) {
   const [remoteImagesAllowed, setRemoteImagesAllowed] = useState(false);
   useEffect(() => setRemoteImagesAllowed(false), [mail.id]);
 
   if (mail.bodyStatus !== "fetched") return <div className="real-email-card body-unavailable"><strong>{mail.bodyStatus === "fetching" ? "正在获取邮件正文" : mail.bodyStatus === "not_fetched" ? "邮件正文尚未下载" : "邮件正文获取失败"}</strong><p>{mail.bodyError || mail.snippet || "暂无可显示的正文。"}</p></div>;
   if (mail.htmlBody) {
-    const containsRemoteContent = /https?:\/\//i.test(mail.htmlBody);
-    return <div className="real-email-card">{containsRemoteContent && !remoteImagesAllowed ? <div className="body-unavailable"><strong>已阻止远程图片</strong><p>远程图片可能用于跟踪邮件打开时间和网络地址。</p><button className="interactive" type="button" onClick={() => setRemoteImagesAllowed(true)}>显示这封邮件的远程图片</button></div> : null}<iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody, remoteImagesAllowed)} title="邮件正文" /></div>;
+    const hasRemoteImages = containsRemoteImages(mail.htmlBody);
+    return <div className="real-email-card">{hasRemoteImages && !remoteImagesAllowed ? <div className="body-unavailable"><strong>已阻止远程图片</strong><p>远程图片可能用于跟踪邮件打开时间和网络地址。</p><button className="interactive" type="button" onClick={() => setRemoteImagesAllowed(true)}>显示这封邮件的远程图片</button></div> : null}<iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody, remoteImagesAllowed)} title="邮件正文" /></div>;
   }
   return <div className="real-email-card plain-message">{mail.textBody || mail.snippet || "这封邮件没有可显示的正文。"}</div>;
 }
