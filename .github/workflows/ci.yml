@@ -34,6 +34,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Prepare Tauri frontend directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force ../public | Out-Null
       - run: cargo fmt --check
       - run: cargo test --all-targets --all-features
       - run: cargo clippy --all-targets --all-features -- -D warnings
