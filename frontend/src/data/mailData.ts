@@ -124,12 +124,21 @@ export function formatListTime(value: string): string {
   return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
+export function relativeDetailTime(value: string, nowMs = Date.now()): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "";
+  const diff = nowMs - timestamp;
+  if (diff < 0 || diff >= 86_400_000) return "";
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))} 分钟前`;
+  return `${Math.max(1, Math.floor(diff / 3_600_000))} 小时前`;
+}
+
 export function formatDetailTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  const diff = Date.now() - date.getTime();
-  const relative = diff >= 0 && diff < 86_400_000 ? `（${Math.max(1, Math.floor(diff / 3_600_000))} 小时前）` : "";
-  return `${date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}${relative}`;
+  const relative = relativeDetailTime(value);
+  return `${date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}${relative ? `（${relative}）` : ""}`;
 }
 
 export function formatLastSync(accounts: Array<{ lastSuccessfulSyncAt: string | null }>): string {
