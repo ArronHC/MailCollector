@@ -2,11 +2,13 @@ import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailPr
 
 const legacyApiKey = "mailCollectorApiKey";
 const localApiKeyKey = "mailCollectorApiKey:local";
-const localRememberedKey = "mailCollectorRememberedApiKey:local";
+const legacyRememberedKey = "mailCollectorRememberedApiKey:local";
 
 function loadLocalApiKey(): string {
+  // Older builds could persist the high-privilege API key in localStorage.
+  // Remove that legacy copy and only allow session-scoped key authentication.
+  localStorage.removeItem(legacyRememberedKey);
   return sessionStorage.getItem(localApiKeyKey)
-    ?? localStorage.getItem(localRememberedKey)
     ?? sessionStorage.getItem(legacyApiKey)
     ?? "";
 }
@@ -18,7 +20,7 @@ function clearLocalApiKey() {
   localApiKey = "";
   sessionStorage.removeItem(legacyApiKey);
   sessionStorage.removeItem(localApiKeyKey);
-  localStorage.removeItem(localRememberedKey);
+  localStorage.removeItem(legacyRememberedKey);
 }
 
 async function fetchLocal(path: string, options: RequestInit = {}, key = localApiKey): Promise<Response> {
