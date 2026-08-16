@@ -38,6 +38,10 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
   const presence = usePresence(open, 200);
   const dialogRef = useRef<HTMLElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const busyRef = useRef(busy);
+  const onCloseRef = useRef(onClose);
+  busyRef.current = busy;
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (open && providers.length && !providers.some((provider) => provider.id === form.provider)) {
@@ -49,11 +53,14 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
   useEffect(() => {
     if (!open) return;
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const frame = window.requestAnimationFrame(() => focusableElements(dialogRef.current!)[0]?.focus());
+    const frame = window.requestAnimationFrame(() => {
+      const dialog = dialogRef.current;
+      if (dialog) (focusableElements(dialog)[0] ?? dialog).focus();
+    });
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) {
+      if (event.key === "Escape" && !busyRef.current) {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -62,7 +69,11 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
       const focusable = focusableElements(dialog);
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
+      if (!first || !last) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
@@ -77,7 +88,7 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
       document.removeEventListener("keydown", keydown);
       restoreFocusRef.current?.focus();
     };
-  }, [open, busy, onClose]);
+  }, [open]);
 
   if (!presence.rendered) return null;
   function selectProvider(id: string) {
