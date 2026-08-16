@@ -149,3 +149,21 @@ pub fn protect(_value: &str) -> Result<String, String> {
 pub fn unprotect(_value: &str) -> Result<String, String> {
     Err("桌面密钥保护当前仅支持 Windows".to_string())
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{protect, unprotect};
+
+    #[test]
+    fn dpapi_round_trip_uses_user_bound_ciphertext() {
+        let plaintext = "mail-collector-test-secret";
+        let protected = protect(plaintext).expect("protect secret");
+        assert_ne!(protected, plaintext);
+        assert_eq!(unprotect(&protected).expect("unprotect secret"), plaintext);
+    }
+
+    #[test]
+    fn invalid_protected_value_is_rejected() {
+        assert!(unprotect("not-hex").is_err());
+    }
+}
