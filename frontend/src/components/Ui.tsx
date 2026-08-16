@@ -56,6 +56,8 @@ export function Modal({ open, title, onClose, children, className = "" }: { open
   const presence = usePresence(open, 200);
   const dialogRef = useRef<HTMLElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -68,7 +70,7 @@ export function Modal({ open, title, onClose, children, className = "" }: { open
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -96,7 +98,7 @@ export function Modal({ open, title, onClose, children, className = "" }: { open
       document.removeEventListener("keydown", keydown);
       restoreFocusRef.current?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!presence.rendered) return null;
   return <div className={`modal-backdrop${presence.closing ? " closing" : ""}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className={`gmail-modal ${className}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header>{children}</section></div>;
