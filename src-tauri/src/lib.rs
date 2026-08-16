@@ -1,3 +1,5 @@
+mod secret_store;
+
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
@@ -19,15 +21,40 @@ use std::os::windows::process::CommandExt;
 
 const LEGACY_ROOT: &str = r"D:\OpenSpace\MailCollector";
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const SECRET_STORAGE_DPAPI: &str = "windows-dpapi-v1";
 
 fn standard_windows_path(path: PathBuf) -> PathBuf {
     let value = path.to_string_lossy();
     PathBuf::from(value.strip_prefix(r"\\?\").unwrap_or(&value))
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 struct RuntimeSettings {
+    encryption_key: String,
+    api_key: String,
+    invite_code: String,
+    allow_private_mail_hosts: String,
+    sync_interval_minutes: String,
+    initial_sync_limit: String,
+    max_message_bytes: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRuntimeSettings {
+    secret_storage: String,
+    encryption_key: String,
+    api_key: String,
+    invite_code: String,
+    allow_private_mail_hosts: String,
+    sync_interval_minutes: String,
+    initial_sync_limit: String,
+    max_message_bytes: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyRuntimeSettings {
     encryption_key: String,
     api_key: String,
     invite_code: String,
@@ -66,11 +93,113 @@ fn read_environment(path: &Path) -> HashMap<String, String> {
         .collect()
 }
 
+fn runtime_settings_backup_path(path: &Path) -> PathBuf {
+    path.with_extension("json.bak")
+}
+
+fn recover_interrupted_runtime_settings_write(path: &Path) -> Result<(), String> {
+    let backup_path = runtime_settings_backup_path(path);
+    if path.exists() {
+        let _ = fs::remove_file(&backup_path);
+        return Ok(());
+    }
+    if backup_path.exists() {
+        fs::copy(&backup_path, path).map_err(|error| format!("恢复桌面密钥配置失败：{error}"))?;
+    }
+    Ok(())
+}
+
+fn write_runtime_settings_file(path: &Path, content: &str) -> Result<(), String> {
+    let temporary_path = path.with_extension("json.tmp");
+    let backup_path = runtime_settings_backup_path(path);
+    let _ = fs::remove_file(&temporary_path);
+
+    let mut temporary = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary_path)
+        .map_err(|error| error.to_string())?;
+    temporary
+        .write_all(content.as_bytes())
+        .map_err(|error| error.to_string())?;
+    temporary.sync_all().map_err(|error| error.to_string())?;
+    drop(temporary);
+
+    if path.exists() {
+        fs::copy(path, &backup_path).map_err(|error| error.to_string())?;
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        if backup_path.exists() {
+            let _ = fs::copy(&backup_path, path);
+        }
+        return Err(error.to_string());
+    }
+
+    let _ = fs::remove_file(&backup_path);
+    Ok(())
+}
+
+fn store_runtime_settings(path: &Path, settings: &RuntimeSettings) -> Result<(), String> {
+    let stored = StoredRuntimeSettings {
+        secret_storage: SECRET_STORAGE_DPAPI.to_string(),
+        encryption_key: secret_store::protect(&settings.encryption_key)?,
+        api_key: secret_store::protect(&settings.api_key)?,
+        invite_code: secret_store::protect(&settings.invite_code)?,
+        allow_private_mail_hosts: settings.allow_private_mail_hosts.clone(),
+        sync_interval_minutes: settings.sync_interval_minutes.clone(),
+        initial_sync_limit: settings.initial_sync_limit.clone(),
+        max_message_bytes: settings.max_message_bytes.clone(),
+    };
+    let content = serde_json::to_string_pretty(&stored).map_err(|error| error.to_string())?;
+    write_runtime_settings_file(path, &format!("{content}\n"))
+}
+
+fn load_stored_runtime_settings(content: &str) -> Result<Option<RuntimeSettings>, String> {
+    let Ok(stored) = serde_json::from_str::<StoredRuntimeSettings>(content) else {
+        return Ok(None);
+    };
+    if stored.secret_storage != SECRET_STORAGE_DPAPI {
+        return Err(format!(
+            "不支持的桌面密钥存储格式：{}",
+            stored.secret_storage
+        ));
+    }
+    Ok(Some(RuntimeSettings {
+        encryption_key: secret_store::unprotect(&stored.encryption_key)?,
+        api_key: secret_store::unprotect(&stored.api_key)?,
+        invite_code: secret_store::unprotect(&stored.invite_code)?,
+        allow_private_mail_hosts: stored.allow_private_mail_hosts,
+        sync_interval_minutes: stored.sync_interval_minutes,
+        initial_sync_limit: stored.initial_sync_limit,
+        max_message_bytes: stored.max_message_bytes,
+    }))
+}
+
 fn runtime_settings(app_data: &Path) -> Result<RuntimeSettings, String> {
     let settings_path = app_data.join("runtime-settings.json");
+    recover_interrupted_runtime_settings_write(&settings_path)?;
     if settings_path.exists() {
         let content = fs::read_to_string(&settings_path).map_err(|error| error.to_string())?;
-        return serde_json::from_str(&content).map_err(|error| error.to_string());
+        if let Some(settings) = load_stored_runtime_settings(&content)? {
+            return Ok(settings);
+        }
+
+        let legacy: LegacyRuntimeSettings =
+            serde_json::from_str(&content).map_err(|error| error.to_string())?;
+        let settings = RuntimeSettings {
+            encryption_key: legacy.encryption_key,
+            api_key: legacy.api_key,
+            invite_code: legacy.invite_code,
+            allow_private_mail_hosts: legacy.allow_private_mail_hosts,
+            sync_interval_minutes: legacy.sync_interval_minutes,
+            initial_sync_limit: legacy.initial_sync_limit,
+            max_message_bytes: legacy.max_message_bytes,
+        };
+        store_runtime_settings(&settings_path, &settings)?;
+        return Ok(settings);
     }
 
     let legacy = read_environment(&Path::new(LEGACY_ROOT).join(".env"));
@@ -108,8 +237,7 @@ fn runtime_settings(app_data: &Path) -> Result<RuntimeSettings, String> {
             .cloned()
             .unwrap_or_else(|| "10485760".to_string()),
     };
-    let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
-    fs::write(settings_path, format!("{content}\n")).map_err(|error| error.to_string())?;
+    store_runtime_settings(&settings_path, &settings)?;
     Ok(settings)
 }
 
