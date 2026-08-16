@@ -162,7 +162,10 @@ fn load_stored_runtime_settings(content: &str) -> Result<Option<RuntimeSettings>
         return Ok(None);
     };
     if stored.secret_storage != SECRET_STORAGE_DPAPI {
-        return Err(format!("不支持的桌面密钥存储格式：{}", stored.secret_storage));
+        return Err(format!(
+            "不支持的桌面密钥存储格式：{}",
+            stored.secret_storage
+        ));
     }
     Ok(Some(RuntimeSettings {
         encryption_key: secret_store::unprotect(&stored.encryption_key)?,
