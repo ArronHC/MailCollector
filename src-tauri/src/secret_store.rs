@@ -89,7 +89,8 @@ mod windows_dpapi {
         if result == 0 {
             return Err(format!("DPAPI 加密失败：{}", io::Error::last_os_error()));
         }
-        let protected = unsafe { slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
+        let protected =
+            unsafe { slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
         unsafe {
             LocalFree(output.pb_data.cast());
         }
@@ -119,7 +120,8 @@ mod windows_dpapi {
         if result == 0 {
             return Err(format!("DPAPI 解密失败：{}", io::Error::last_os_error()));
         }
-        let plaintext = unsafe { slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
+        let plaintext =
+            unsafe { slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
         unsafe {
             LocalFree(output.pb_data.cast());
         }
@@ -166,7 +168,10 @@ mod tests {
     fn dpapi_round_trip_preserves_unicode() {
         let plaintext = "收信台-密钥-🔐";
         let protected = protect(plaintext).expect("protect unicode secret");
-        assert_eq!(unprotect(&protected).expect("unprotect unicode secret"), plaintext);
+        assert_eq!(
+            unprotect(&protected).expect("unprotect unicode secret"),
+            plaintext
+        );
     }
 
     #[test]
