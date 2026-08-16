@@ -105,9 +105,7 @@ fn store_runtime_settings(path: &Path, settings: &RuntimeSettings) -> Result<(),
         max_message_bytes: settings.max_message_bytes.clone(),
     };
     let content = serde_json::to_string_pretty(&stored).map_err(|error| error.to_string())?;
-    let temporary_path = path.with_extension("json.tmp");
-    fs::write(&temporary_path, format!("{content}\n")).map_err(|error| error.to_string())?;
-    fs::rename(&temporary_path, path).map_err(|error| error.to_string())?;
+    fs::write(path, format!("{content}\n")).map_err(|error| error.to_string())?;
     Ok(())
 }
 
