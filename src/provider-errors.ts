@@ -14,13 +14,25 @@ export class DeferredJobError extends Error {
   }
 }
 
+export function parseRetryAfterMs(value: string | undefined, now = Date.now()): number | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : null;
+  }
+  const timestamp = Date.parse(trimmed);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, timestamp - now);
+}
+
 export function classifyProviderError(error: unknown): ClassifiedProviderError {
   const value = error as { code?: string; status?: number; statusCode?: number; responseStatus?: string; response?: { status?: number; headers?: Record<string, string> } };
   const message = error instanceof Error ? error.message : String(error);
   const normalized = `${value.code ?? ""} ${value.responseStatus ?? ""} ${message}`.toLowerCase();
   const status = value.status ?? value.statusCode ?? value.response?.status;
   const retryAfter = value.response?.headers?.["retry-after"];
-  const retryAfterMs = retryAfter && Number.isFinite(Number(retryAfter)) ? Number(retryAfter) * 1000 : null;
+  const retryAfterMs = parseRetryAfterMs(retryAfter);
 
   if (status === 401 || /authentication|invalid credentials|login failed|authentica/.test(normalized)) {
     return { kind: "reauth_required", retryable: false, retryAfterMs: null, message };
