@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Archive, ChevronDown, ChevronLeft, ChevronRight, Clock3, Inbox, Mail, MailOpen, MoreVertical, Paperclip, RefreshCw, Star, Tag, Trash2, TriangleAlert } from "lucide-react";
 import type { MailAccount, MailItem, MailLabel, MailSource, MessageActions, MessageFolder } from "../data/mailData";
 import { formatListTime, messageSource, sourceNames } from "../data/mailData";
@@ -71,5 +72,8 @@ interface MailListPanelProps {
 export function MailListPanel(props: MailListPanelProps) {
   const { mails, accounts, labels, activeAccount, title, activeTab, activeMailId, checkedIds, total, offset, loading, syncing, error, trashView, onTabChange, onSelect, onStar, onCheck, onCheckAll, onSelectWhere, onRefresh, onBulk, onPermanentDelete, onPrevious, onNext } = props;
   const sourceCount = new Set(accounts.map((account) => messageSource({ accountName: account.name, accountEmail: account.email }))).size;
+  useEffect(() => {
+    if (!loading && offset > 0 && offset >= total) onPrevious();
+  }, [loading, offset, total, onPrevious]);
   return <section className="mail-list-panel"><MailListToolbar checkedCount={checkedIds.size} allChecked={mails.length > 0 && mails.every((mail) => checkedIds.has(mail.id))} onCheckAll={onCheckAll} onSelectWhere={onSelectWhere} onRefresh={onRefresh} syncing={syncing} total={total} offset={offset} shown={mails.length} trashView={trashView} labels={labels} onBulk={onBulk} onPermanentDelete={onPermanentDelete} onPrevious={onPrevious} onNext={onNext} /><div className="mailbox-header"><MailboxHeader accountCount={accounts.length} activeAccount={activeAccount} title={title} /><MailTabs active={activeTab} accounts={activeAccount ? [] : accounts} onChange={onTabChange} /></div><div className="mail-list-scroll">{loading ? <div className="panel-state loading-pulse">正在加载邮件...</div> : error ? <div className="panel-state error-state"><strong>无法加载邮件</strong><span>{error}</span><button onClick={onRefresh}>重试</button></div> : mails.length ? mails.map((mail) => <MailRow key={mail.id} mail={mail} selected={activeMailId === mail.id} checked={checkedIds.has(mail.id)} showSource={!activeAccount && sourceCount > 1} onCheck={() => onCheck(mail.id)} onSelect={() => onSelect(mail)} onStar={() => onStar(mail.id)} />) : <div className="panel-state"><Mail size={38} /><strong>这里没有邮件</strong><span>{accounts.length ? "调整筛选条件，或点击刷新同步邮箱。" : "请先添加邮箱账户。"}</span></div>}</div></section>;
 }
