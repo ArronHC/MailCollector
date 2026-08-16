@@ -25,7 +25,9 @@ jobs:
 
   rust:
     name: Rust and desktop runtime checks
-    runs-on: windows-latest
+    runs-on: windows-2022
+    env:
+      npm_config_msvs_version: "2022"
     defaults:
       run:
         working-directory: src-tauri
