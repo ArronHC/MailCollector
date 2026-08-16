@@ -24,19 +24,24 @@ jobs:
       - run: npm run build
 
   rust:
-    name: Rust checks
+    name: Rust and desktop runtime checks
     runs-on: windows-latest
     defaults:
       run:
         working-directory: src-tauri
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Prepare Tauri frontend directory
-        shell: pwsh
-        run: New-Item -ItemType Directory -Force ../public | Out-Null
+      - name: Install application dependencies
+        run: npm ci --prefix ..
+      - name: Prepare and smoke-test desktop runtime
+        run: npm run build:desktop --prefix ..
       - run: cargo fmt --check
       - run: cargo test --all-targets --all-features
       - run: cargo clippy --all-targets --all-features -- -D warnings
