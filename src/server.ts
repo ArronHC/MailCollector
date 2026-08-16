@@ -103,18 +103,25 @@ const smtpSender = new SmtpSender(config.encryptionKey);
 const app = express();
 const sessionCookieName = "mail_collector_session";
 const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+const authAttemptWindowMs = 15 * 60_000;
+const authAttemptLimit = 10;
+const authAttemptMaxEntries = 5_000;
 const authAttempts = new Map<string, { count: number; resetAt: number }>();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "100kb" }));
 app.use((_request, response, next) => {
   response.set({
-    "Content-Security-Policy": "default-src 'self'; connect-src 'self' https: http:; script-src 'self'; style-src 'self' 'unsafe-inline' https: http:; img-src 'self' data: cid: https: http:; font-src 'self' data: https: http:; media-src 'self' data: cid: https: http:; frame-src 'self' data: https: http:; object-src 'none'; base-uri 'self' https: http:; frame-ancestors 'none'; form-action 'self'",
+    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; media-src 'self' data:; frame-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
   });
+  next();
+});
+app.use("/api", (_request, response, next) => {
+  response.set("Cache-Control", "no-store");
   next();
 });
 
@@ -131,15 +138,27 @@ function validApiKey(value: string): boolean {
   return validSecret(value, expectedApiKey);
 }
 
+function pruneAuthAttempts(now: number): void {
+  for (const [key, attempt] of authAttempts) {
+    if (attempt.resetAt <= now) authAttempts.delete(key);
+  }
+}
+
 function allowAuthAttempt(request: express.Request, response: express.Response): boolean {
   const key = request.ip || request.socket.remoteAddress || "unknown";
   const now = Date.now();
+  pruneAuthAttempts(now);
   const current = authAttempts.get(key);
-  if (!current || current.resetAt <= now) {
-    authAttempts.set(key, { count: 1, resetAt: now + 15 * 60_000 });
+  if (!current) {
+    if (authAttempts.size >= authAttemptMaxEntries) {
+      response.set("Retry-After", String(Math.ceil(authAttemptWindowMs / 1000)));
+      response.status(429).json({ error: "登录请求过多，请稍后再试" });
+      return false;
+    }
+    authAttempts.set(key, { count: 1, resetAt: now + authAttemptWindowMs });
     return true;
   }
-  if (current.count >= 10) {
+  if (current.count >= authAttemptLimit) {
     response.set("Retry-After", String(Math.ceil((current.resetAt - now) / 1000)));
     response.status(429).json({ error: "尝试次数过多，请稍后再试" });
     return false;
@@ -170,11 +189,6 @@ function clearAppSession(request: express.Request, response: express.Response): 
   if (token) database.deleteAppSession(hashSessionToken(token));
   response.clearCookie(sessionCookieName, { httpOnly: true, sameSite: "strict", secure: request.secure, path: "/api" });
 }
-
-app.use("/api/auth", (_request, response, next) => {
-  response.set("Cache-Control", "no-store");
-  next();
-});
 
 app.get("/api/auth/status", (_request, response) => response.json({ registered: database.hasAppUser() }));
 app.get("/api/service", (_request, response) => response.json({ ok: true, service: "mail-collector", version: config.serviceVersion }));
@@ -517,6 +531,8 @@ app.post("/api/drafts/:id/send", async (request, response, next) => {
     next(error);
   }
 });
+
+app.use("/api", (_request, response) => response.status(404).json({ error: "API 接口不存在" }));
 
 const publicDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
 app.use(express.static(publicDirectory));
