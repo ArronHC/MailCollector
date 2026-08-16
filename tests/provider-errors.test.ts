@@ -21,11 +21,19 @@ test("ignores malformed Retry-After values", () => {
 test("rate-limited errors preserve Retry-After for scheduling", () => {
   const error = Object.assign(new Error("Too many requests"), {
     status: 429,
-    response: { headers: { "retry-after": "3" } }
+    response: { headers: { "Retry-After": "3" } }
   });
   const classified = classifyProviderError(error);
   assert.equal(classified.kind, "rate_limited");
   assert.equal(classified.retryable, true);
   assert.equal(classified.retryAfterMs, 3_000);
   assert.equal(retryDelayMs(1, classified.retryAfterMs, () => 0), 3_000);
+});
+
+test("rate-limited errors support Headers objects", () => {
+  const error = Object.assign(new Error("rate limit"), {
+    status: 429,
+    response: { headers: new Headers({ "retry-after": "2" }) }
+  });
+  assert.equal(classifyProviderError(error).retryAfterMs, 2_000);
 });
