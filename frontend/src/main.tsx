@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { DesktopTitleBar } from "./components/DesktopTitleBar";
 import "./styles.css";
+import "./visual-polish.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

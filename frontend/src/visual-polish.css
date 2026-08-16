@@ -1,0 +1,637 @@
+/*
+ * Visual polish layer.
+ *
+ * Keep the existing component styles as the compatibility baseline and make
+ * high-level visual decisions here so the workspace can evolve without
+ * turning styles.css into an even larger monolith.
+ */
+
+:root {
+  --ink: #1f2b25;
+  --muted: #748079;
+  --line: #e3e7e1;
+  --paper: #ffffff;
+  --paper-soft: #f5f7f3;
+  --canvas: #f1f4f0;
+  --shadow: 0 18px 46px rgba(31, 45, 38, .09);
+}
+
+.app-shell {
+  background:
+    radial-gradient(circle at 55% -32%, rgba(255, 255, 255, .9), transparent 46%),
+    var(--canvas);
+}
+
+.desktop-frame {
+  background: var(--canvas);
+}
+
+.desktop-frame > .app-shell {
+  grid-template-rows: 72px minmax(0, 1fr);
+}
+
+.desktop-titlebar {
+  color: #3f5d53;
+  background: rgba(249, 251, 248, .94);
+  border-bottom-color: rgba(31, 73, 62, .08);
+}
+
+.top-bar {
+  grid-template-columns: 228px minmax(0, 1fr);
+  height: 72px;
+  padding: 10px 12px 8px;
+  background: transparent;
+}
+
+.mail-brand {
+  gap: 9px;
+  margin-left: 9px;
+}
+
+.mail-brand > svg {
+  width: 34px;
+  height: 34px;
+}
+
+.mail-brand span {
+  font-size: 16px;
+}
+
+.top-main {
+  gap: 13px;
+}
+
+.top-search {
+  width: min(680px, 55vw);
+  height: 46px;
+  padding: 0 14px;
+  border-color: rgba(208, 215, 209, .82);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .88);
+  box-shadow: 0 1px 2px rgba(31, 45, 38, .025), 0 7px 20px rgba(31, 45, 38, .035);
+}
+
+.top-search:focus-within {
+  border-color: rgba(23, 107, 87, .42);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(23, 107, 87, .07), 0 10px 26px rgba(31, 45, 38, .055);
+}
+
+.top-search input {
+  font-size: 13px;
+}
+
+.icon-button {
+  width: 35px;
+  height: 35px;
+  border-radius: 10px;
+}
+
+.icon-button:hover {
+  background: rgba(223, 228, 222, .75);
+}
+
+.sync-status,
+.classify-button {
+  min-height: 36px;
+  border-radius: 11px;
+}
+
+.user-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18);
+}
+
+.content-grid {
+  grid-template-columns: 220px minmax(370px, 410px) minmax(460px, 1fr);
+  gap: 10px;
+  height: calc(100vh - 72px);
+  padding: 0 12px 12px;
+}
+
+.mail-list-panel,
+.mail-reader-panel {
+  border-color: rgba(211, 218, 212, .78);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .93);
+  box-shadow: 0 1px 2px rgba(31, 45, 38, .035), 0 13px 34px rgba(31, 45, 38, .055);
+}
+
+/* Let the sidebar belong to the workspace instead of looking like a third card. */
+.sidebar {
+  padding: 10px 8px 12px;
+  border-color: transparent;
+  border-radius: 16px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.compose-button {
+  height: 44px;
+  border-radius: 13px;
+  background: linear-gradient(135deg, #176b57, #207b65);
+  box-shadow: 0 8px 20px rgba(23, 107, 87, .17);
+  font-size: 13px;
+}
+
+.compose-button:hover {
+  box-shadow: 0 11px 24px rgba(23, 107, 87, .21);
+}
+
+.account-list {
+  max-height: 168px;
+  margin-top: 17px;
+}
+
+.mail-navigation {
+  margin-top: 16px;
+}
+
+.label-list {
+  margin-top: 14px;
+}
+
+.sidebar-section-title {
+  height: 30px;
+  color: #919a94;
+  font-size: 9px;
+  letter-spacing: .12em;
+}
+
+.account-item,
+.navigation-item,
+.label-row {
+  border-radius: 11px;
+}
+
+.account-item {
+  height: 39px;
+}
+
+.navigation-item {
+  height: 37px;
+}
+
+.label-row {
+  height: 35px;
+}
+
+.account-item:hover,
+.navigation-item:hover,
+.label-row:hover {
+  background: rgba(255, 255, 255, .66);
+}
+
+.account-item.active,
+.navigation-item.active,
+.label-row.active {
+  color: var(--accent-dark);
+  background: rgba(255, 255, 255, .9);
+  box-shadow: inset 3px 0 0 var(--accent), 0 1px 2px rgba(31, 45, 38, .045);
+}
+
+/* Denser list: mail should feel scannable, not like a stack of large cards. */
+.mail-list-panel {
+  grid-template-rows: 52px 76px minmax(0, 1fr);
+}
+
+.mail-list-toolbar {
+  padding: 0 12px;
+  border-bottom-color: var(--line);
+}
+
+.mailbox-header {
+  grid-template-rows: 41px 35px;
+  padding: 0 13px;
+}
+
+.mailbox-title {
+  gap: 7px;
+}
+
+.mailbox-title h1 {
+  font-family: "Segoe UI Variable", "Aptos", "Noto Sans SC", sans-serif;
+  font-size: 20px;
+  font-weight: 680;
+  letter-spacing: -.025em;
+}
+
+.mailbox-title span {
+  padding: 0;
+  color: #87908a;
+  background: transparent;
+  font-size: 10px;
+}
+
+.mail-tabs {
+  gap: 3px;
+}
+
+.mail-tabs button {
+  height: 27px;
+  padding: 0 10px;
+  border-radius: 9px;
+}
+
+.mail-tabs button.active {
+  background: #edf5f1;
+}
+
+.mail-list-scroll {
+  padding: 2px 6px 8px;
+  background: linear-gradient(180deg, rgba(250, 251, 249, .7), rgba(255, 255, 255, .2));
+}
+
+.mail-row {
+  grid-template-columns: 40px minmax(0, 1fr);
+  min-height: 78px;
+  margin: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: inset 0 -1px rgba(225, 229, 224, .82);
+}
+
+.mail-row:hover {
+  border-color: transparent;
+  background: rgba(246, 248, 245, .96);
+  box-shadow: inset 0 -1px transparent;
+  transform: none;
+}
+
+.mail-row.selected {
+  border-color: transparent;
+  background: #edf5f1;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.mail-row.is-unread::before {
+  top: 16px;
+  left: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.mail-checkbox {
+  padding: 13px 0 0 14px;
+}
+
+.mail-row-body {
+  padding: 9px 38px 8px 0;
+}
+
+.mail-row-top strong,
+.mail-subject {
+  font-size: 12.5px;
+}
+
+.mail-preview {
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 15px;
+}
+
+.source-badge,
+.row-label {
+  margin-top: 5px;
+}
+
+.row-star {
+  right: 7px;
+  bottom: 7px;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+}
+
+/* Reading surface: editorial enough for mail, restrained enough for a work app. */
+.mail-reader-panel {
+  grid-template-rows: 52px minmax(0, 1fr);
+}
+
+.reader-toolbar {
+  padding: 0 14px;
+  border-bottom-color: var(--line);
+  background: rgba(255, 255, 255, .82);
+  backdrop-filter: blur(16px) saturate(1.08);
+}
+
+.reader-tool {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+
+.reader-scroll {
+  background: #fcfdfa;
+}
+
+.mail-reader-header,
+.reader-message {
+  width: min(820px, calc(100% - 64px));
+}
+
+.mail-reader-header {
+  padding-top: 23px;
+}
+
+.reader-title h2 {
+  font-family: "Segoe UI Variable", "Aptos", "Noto Sans SC", sans-serif;
+  font-size: clamp(23px, 1.9vw, 28px);
+  font-weight: 680;
+  letter-spacing: -.03em;
+  line-height: 1.24;
+}
+
+.reader-context {
+  margin-top: 8px;
+}
+
+.reader-context span {
+  height: 20px;
+  border-radius: 7px;
+}
+
+.sender-info {
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  min-height: 56px;
+  margin-top: 14px;
+}
+
+.google-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #b9674d, #cf8064);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .24);
+}
+
+.sender-copy {
+  padding-left: 5px;
+}
+
+.real-email-card {
+  border-color: #e6e9e4;
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(31, 45, 38, .025);
+}
+
+.plain-message {
+  padding: 28px 30px;
+  line-height: 1.78;
+}
+
+.reader-empty::before {
+  width: 78px;
+  height: 78px;
+  border-radius: 24px;
+  box-shadow: 0 8px 22px rgba(31, 45, 38, .06);
+}
+
+.reader-empty > svg {
+  margin-top: -76px;
+}
+
+/* Menus and dialogs get the same quieter surface treatment. */
+.dialog-backdrop,
+.modal-backdrop {
+  background: rgba(29, 42, 35, .34);
+  backdrop-filter: blur(9px) saturate(.9);
+}
+
+.account-dialog,
+.gmail-modal {
+  border-color: rgba(219, 224, 218, .9);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 26px 80px rgba(24, 38, 32, .2);
+}
+
+.account-dialog > header,
+.gmail-modal > header {
+  min-height: 66px;
+  padding: 14px 20px;
+}
+
+.account-dialog h2,
+.gmail-modal > header h2 {
+  font-family: "Segoe UI Variable", "Aptos", "Noto Sans SC", sans-serif;
+  font-size: 20px;
+  font-weight: 680;
+  letter-spacing: -.02em;
+}
+
+.gmail-menu {
+  padding: 6px;
+  border-color: #e1e5df;
+  border-radius: 12px;
+  box-shadow: 0 16px 42px rgba(31, 45, 38, .13);
+}
+
+.gmail-menu-button {
+  min-height: 36px;
+  border-radius: 8px;
+}
+
+/* Make compose feel like a floating tool, not a panel glued to the window edge. */
+.compose-window {
+  right: 22px;
+  bottom: 18px;
+  width: 580px;
+  height: min(620px, calc(100% - 42px));
+  border-color: rgba(207, 214, 208, .95);
+  border-radius: 17px;
+  box-shadow: 0 28px 78px rgba(24, 38, 32, .2), 0 4px 14px rgba(24, 38, 32, .08);
+}
+
+.compose-window.expanded {
+  bottom: 20px;
+  border-radius: 18px;
+}
+
+.compose-window.minimized {
+  bottom: 18px;
+  height: 46px;
+  border-radius: 14px;
+}
+
+.compose-window > header {
+  background: linear-gradient(135deg, #173d34, #1d5143);
+}
+
+.compose-fields {
+  padding-top: 8px;
+}
+
+.compose-body {
+  padding: 18px 19px;
+  font-family: "Segoe UI Variable", "Aptos", "Noto Sans SC", sans-serif;
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.compose-window > footer {
+  border-top: 1px solid #edf0eb;
+  background: #fbfcfa;
+}
+
+.send-button {
+  height: 38px;
+  border-radius: 11px;
+  box-shadow: 0 6px 14px rgba(23, 107, 87, .14);
+}
+
+.toast-stack {
+  right: 18px;
+  bottom: 18px;
+  gap: 7px;
+}
+
+.toast {
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 12px;
+  background: rgba(31, 45, 38, .95);
+  box-shadow: 0 14px 36px rgba(24, 38, 32, .2);
+  backdrop-filter: blur(14px);
+}
+
+.app-shell.sidebar-collapsed .top-bar {
+  grid-template-columns: 74px minmax(0, 1fr);
+}
+
+.app-shell.sidebar-collapsed .content-grid {
+  grid-template-columns: 58px minmax(370px, 410px) minmax(460px, 1fr);
+}
+
+@media (max-width: 1180px) {
+  .top-bar {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+
+  .content-grid {
+    grid-template-columns: 196px 380px minmax(380px, 1fr);
+  }
+
+  .app-shell.sidebar-collapsed .content-grid {
+    grid-template-columns: 58px 380px minmax(380px, 1fr);
+  }
+}
+
+@media (max-width: 960px) {
+  .top-bar {
+    grid-template-columns: 74px minmax(0, 1fr);
+  }
+
+  .content-grid {
+    grid-template-columns: 58px 370px minmax(360px, 1fr);
+  }
+
+  .top-search {
+    width: min(600px, 68vw);
+  }
+
+  .compose-button {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (max-width: 760px) {
+  .top-bar,
+  .app-shell.sidebar-collapsed .top-bar {
+    position: relative;
+    display: block;
+    height: 68px;
+    padding: 8px 8px 7px;
+  }
+
+  .brand-area {
+    top: 8px;
+    left: 8px;
+    height: 50px;
+  }
+
+  .top-main {
+    height: 50px;
+    padding-left: 49px;
+  }
+
+  .top-search {
+    width: 100%;
+    height: 50px;
+  }
+
+  .content-grid,
+  .app-shell.sidebar-collapsed .content-grid {
+    display: block;
+    height: calc(100vh - 68px);
+    padding: 0 8px 8px;
+  }
+
+  .sidebar {
+    top: 68px;
+    right: auto;
+    bottom: 8px;
+    left: 8px;
+    width: min(286px, calc(100vw - 16px));
+    padding: 12px 9px;
+    border-color: rgba(211, 218, 212, .86);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, .97);
+    box-shadow: 12px 0 36px rgba(24, 38, 32, .16);
+    backdrop-filter: blur(16px);
+  }
+
+  .mail-list-panel {
+    height: 100%;
+    border-radius: 16px;
+  }
+
+  .mail-row {
+    min-height: 78px;
+  }
+
+  .mail-reader-panel {
+    inset: 68px 8px 8px;
+    border-radius: 16px;
+  }
+
+  .mail-reader-panel.reader-expanded {
+    inset: 0;
+    border-radius: 0;
+  }
+
+  .mail-reader-header,
+  .reader-message,
+  .reader-expanded .mail-reader-header,
+  .reader-expanded .reader-message {
+    width: calc(100% - 28px);
+  }
+
+  .compose-window,
+  .compose-window.expanded {
+    right: 8px;
+    bottom: 8px;
+    width: calc(100% - 16px);
+    height: calc(100vh - 84px);
+    border-radius: 16px;
+  }
+
+  .compose-window.minimized {
+    right: 8px;
+    bottom: 8px;
+    width: calc(100% - 16px);
+    border-radius: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compose-button:hover,
+  .mail-row:hover {
+    transform: none;
+  }
+}
