@@ -9,6 +9,14 @@ function integer(name: string, fallback: number): number {
   return value;
 }
 
+function nonNegativeInteger(name: string, fallback: number): number {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return value;
+}
+
 function encryptionKey(): Buffer {
   const raw = process.env.ENCRYPTION_KEY;
   if (!raw) {
@@ -57,8 +65,8 @@ export const config = {
   syncIntervalMinutes: integer("SYNC_INTERVAL_MINUTES", 5),
   initialSyncLimit: integer("INITIAL_SYNC_LIMIT", 100),
   maxMessageBytes: integer("MAX_MESSAGE_BYTES", 10 * 1024 * 1024),
-  bodyPrefetchPerAccount: integer("BODY_PREFETCH_PER_ACCOUNT", 10),
-  bodyPrefetchPerDrain: integer("BODY_PREFETCH_PER_DRAIN", 3),
+  bodyPrefetchPerAccount: nonNegativeInteger("BODY_PREFETCH_PER_ACCOUNT", 10),
+  bodyPrefetchPerDrain: nonNegativeInteger("BODY_PREFETCH_PER_DRAIN", 3),
   backfillPageSize: integer("BACKFILL_PAGE_SIZE", 100),
   reconcileMessageLimit: integer("RECONCILE_MESSAGE_LIMIT", 500),
   activeReconcileMinutes: integer("ACTIVE_RECONCILE_MINUTES", 30),
