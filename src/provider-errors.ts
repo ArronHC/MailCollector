@@ -26,13 +26,21 @@ export function parseRetryAfterMs(value: string | undefined, now = Date.now()): 
   return Math.max(0, timestamp - now);
 }
 
+function responseHeader(headers: unknown, name: string): string | undefined {
+  if (!headers) return undefined;
+  if (typeof Headers !== "undefined" && headers instanceof Headers) return headers.get(name) ?? undefined;
+  if (typeof headers !== "object") return undefined;
+  const entries = Object.entries(headers as Record<string, unknown>);
+  const matched = entries.find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return typeof matched?.[1] === "string" ? matched[1] : undefined;
+}
+
 export function classifyProviderError(error: unknown): ClassifiedProviderError {
-  const value = error as { code?: string; status?: number; statusCode?: number; responseStatus?: string; response?: { status?: number; headers?: Record<string, string> } };
+  const value = error as { code?: string; status?: number; statusCode?: number; responseStatus?: string; response?: { status?: number; headers?: unknown } };
   const message = error instanceof Error ? error.message : String(error);
   const normalized = `${value.code ?? ""} ${value.responseStatus ?? ""} ${message}`.toLowerCase();
   const status = value.status ?? value.statusCode ?? value.response?.status;
-  const retryAfter = value.response?.headers?.["retry-after"];
-  const retryAfterMs = parseRetryAfterMs(retryAfter);
+  const retryAfterMs = parseRetryAfterMs(responseHeader(value.response?.headers, "retry-after"));
 
   if (status === 401 || /authentication|invalid credentials|login failed|authentica/.test(normalized)) {
     return { kind: "reauth_required", retryable: false, retryAfterMs: null, message };
