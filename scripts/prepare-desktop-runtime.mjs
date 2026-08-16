@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtime = path.join(root, "src-tauri", "resources", "runtime");
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 fs.mkdirSync(runtime, { recursive: true });
 for (const directory of ["dist", "public"]) {
@@ -18,15 +17,30 @@ if (!fs.existsSync(path.join(runtime, "package.json")) || !fs.existsSync(path.jo
   throw new Error("Desktop runtime package manifest is incomplete");
 }
 
-execFileSync(npmCommand, ["ci", "--omit=dev"], {
-  cwd: runtime,
-  stdio: "inherit",
-  env: {
-    ...process.env,
-    npm_config_audit: "false",
-    npm_config_fund: "false",
-  },
-});
+const npmExecPath = process.env.npm_execpath;
+if (npmExecPath && fs.existsSync(npmExecPath)) {
+  execFileSync(process.execPath, [npmExecPath, "ci", "--omit=dev"], {
+    cwd: runtime,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+    },
+  });
+} else {
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  execFileSync(npmCommand, ["ci", "--omit=dev"], {
+    cwd: runtime,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    env: {
+      ...process.env,
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+    },
+  });
+}
 
 const requiredRuntimePackages = [
   "better-sqlite3",
