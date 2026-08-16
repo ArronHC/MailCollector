@@ -93,6 +93,56 @@ fn read_environment(path: &Path) -> HashMap<String, String> {
         .collect()
 }
 
+fn runtime_settings_backup_path(path: &Path) -> PathBuf {
+    path.with_extension("json.bak")
+}
+
+fn recover_interrupted_runtime_settings_write(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    let backup_path = runtime_settings_backup_path(path);
+    if backup_path.exists() {
+        fs::copy(&backup_path, path).map_err(|error| format!("恢复桌面密钥配置失败：{error}"))?;
+    }
+    Ok(())
+}
+
+fn write_runtime_settings_file(path: &Path, content: &str) -> Result<(), String> {
+    let temporary_path = path.with_extension("json.tmp");
+    let backup_path = runtime_settings_backup_path(path);
+    let _ = fs::remove_file(&temporary_path);
+
+    let mut temporary = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary_path)
+        .map_err(|error| error.to_string())?;
+    temporary
+        .write_all(content.as_bytes())
+        .map_err(|error| error.to_string())?;
+    temporary.sync_all().map_err(|error| error.to_string())?;
+    drop(temporary);
+
+    if path.exists() {
+        fs::copy(path, &backup_path).map_err(|error| error.to_string())?;
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        if backup_path.exists() {
+            let _ = fs::copy(&backup_path, path);
+        }
+        return Err(error.to_string());
+    }
+
+    // A backup created from the legacy plaintext format must not remain after
+    // a successful migration. It only exists long enough to recover a crash.
+    let _ = fs::remove_file(&backup_path);
+    Ok(())
+}
+
 fn store_runtime_settings(path: &Path, settings: &RuntimeSettings) -> Result<(), String> {
     let stored = StoredRuntimeSettings {
         secret_storage: SECRET_STORAGE_DPAPI.to_string(),
@@ -105,8 +155,7 @@ fn store_runtime_settings(path: &Path, settings: &RuntimeSettings) -> Result<(),
         max_message_bytes: settings.max_message_bytes.clone(),
     };
     let content = serde_json::to_string_pretty(&stored).map_err(|error| error.to_string())?;
-    fs::write(path, format!("{content}\n")).map_err(|error| error.to_string())?;
-    Ok(())
+    write_runtime_settings_file(path, &format!("{content}\n"))
 }
 
 fn load_stored_runtime_settings(content: &str) -> Result<Option<RuntimeSettings>, String> {
@@ -129,6 +178,7 @@ fn load_stored_runtime_settings(content: &str) -> Result<Option<RuntimeSettings>
 
 fn runtime_settings(app_data: &Path) -> Result<RuntimeSettings, String> {
     let settings_path = app_data.join("runtime-settings.json");
+    recover_interrupted_runtime_settings_write(&settings_path)?;
     if settings_path.exists() {
         let content = fs::read_to_string(&settings_path).map_err(|error| error.to_string())?;
         if let Some(settings) = load_stored_runtime_settings(&content)? {
