@@ -47,16 +47,61 @@ export function MenuButton({ icon, label, detail, disabled, danger, onClick }: {
   return <button className={`gmail-menu-button${danger ? " danger" : ""}`} role="menuitem" disabled={disabled} onClick={onClick}>{icon}<span>{label}</span>{detail ? <small>{detail}</small> : null}</button>;
 }
 
+function focusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"))
+    .filter((element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true");
+}
+
 export function Modal({ open, title, onClose, children, className = "" }: { open: boolean; title: string; onClose: () => void; children: React.ReactNode; className?: string }) {
   const presence = usePresence(open, 200);
+  const dialogRef = useRef<HTMLElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     if (!open) return;
-    const closeEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    document.addEventListener("keydown", closeEscape);
-    return () => document.removeEventListener("keydown", closeEscape);
-  }, [open, onClose]);
+    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => {
+      const dialog = dialogRef.current;
+      const focusable = dialog ? focusableElements(dialog) : [];
+      (focusable[0] ?? dialog)?.focus();
+    });
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = focusableElements(dialog);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", keydown);
+      restoreFocusRef.current?.focus();
+    };
+  }, [open]);
+
   if (!presence.rendered) return null;
-  return <div className={`modal-backdrop${presence.closing ? " closing" : ""}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className={`gmail-modal ${className}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header>{children}</section></div>;
+  return <div className={`modal-backdrop${presence.closing ? " closing" : ""}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className={`gmail-modal ${className}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header>{children}</section></div>;
 }
 
 export function ToastStack({ toasts, dismiss }: { toasts: ToastMessage[]; dismiss: (id: number) => void }) {

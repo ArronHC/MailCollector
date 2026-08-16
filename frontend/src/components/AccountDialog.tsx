@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, X } from "lucide-react";
 import type { MailAccount, MailProvider } from "../data/mailData";
 import { usePresence } from "./Ui";
@@ -29,9 +29,19 @@ interface AccountDialogProps {
   onDelete: (account: MailAccount) => Promise<void>;
 }
 
+function focusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"));
+}
+
 export function AccountDialog({ open, providers, accounts, busy, error, onClose, onSubmit, onSync, onToggle, onDelete }: AccountDialogProps) {
   const [form, setForm] = useState<AccountForm>(emptyForm);
   const presence = usePresence(open, 200);
+  const dialogRef = useRef<HTMLElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const busyRef = useRef(busy);
+  const onCloseRef = useRef(onClose);
+  busyRef.current = busy;
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (open && providers.length && !providers.some((provider) => provider.id === form.provider)) {
@@ -40,6 +50,46 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
     }
   }, [open, providers, form.provider]);
 
+  useEffect(() => {
+    if (!open) return;
+    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => {
+      const dialog = dialogRef.current;
+      if (dialog) (focusableElements(dialog)[0] ?? dialog).focus();
+    });
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busyRef.current) {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = focusableElements(dialog);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", keydown);
+      restoreFocusRef.current?.focus();
+    };
+  }, [open]);
+
   if (!presence.rendered) return null;
   function selectProvider(id: string) {
     const provider = providers.find((item) => item.id === id);
@@ -47,7 +97,7 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
   }
   return (
     <div className={`dialog-backdrop${presence.closing ? " closing" : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
-      <section className="account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title">
+      <section ref={dialogRef} tabIndex={-1} className="account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title">
         <header><div><span>邮箱连接</span><h2 id="account-dialog-title">管理邮箱账户</h2></div><button className="icon-button" onClick={onClose} disabled={busy} aria-label="关闭"><X /></button></header>
         {accounts.length ? <div className="managed-accounts">{accounts.map((account) => <div className="managed-account" key={account.id}><div><strong>{account.name}</strong><span>{account.email}</span><small className={account.status}>{account.status === "syncing" ? "正在同步" : account.status === "backfilling" ? "正在同步历史邮件" : account.status === "reauth_required" ? "需要重新授权" : account.status === "error" || account.status === "degraded" ? account.lastError : account.status === "disabled" ? "已停用" : account.lastSyncAt ? `上次同步：${new Date(account.lastSyncAt).toLocaleString("zh-CN")}` : "尚未同步"}</small></div><div><button onClick={() => void onSync(account)} disabled={busy || !account.enabled}>同步</button><button onClick={() => void onToggle(account)} disabled={busy}>{account.enabled ? "停用" : "启用"}</button><button className="danger" onClick={() => void onDelete(account)} disabled={busy}>删除</button></div></div>)}</div> : null}
         <form onSubmit={(event) => { event.preventDefault(); void onSubmit(form).then(() => setForm(emptyForm)).catch(() => {}); }}>
