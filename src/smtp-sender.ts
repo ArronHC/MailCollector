@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { decryptSecret } from "./crypto.js";
+import { assertAllowedMailHost } from "./network-security.js";
 import type { LocalMessageContent, MailAccount } from "./types.js";
 
 export type SmtpPreset = {
@@ -30,6 +31,7 @@ export class SmtpSender {
 
   async send(account: MailAccount, message: LocalMessageContent): Promise<{ messageId: string | null; sentAt: string }> {
     const preset = smtpPresetForImapHost(account.host);
+    await assertAllowedMailHost(preset.host, false, false);
 
     const transport = nodemailer.createTransport({
       ...preset,
