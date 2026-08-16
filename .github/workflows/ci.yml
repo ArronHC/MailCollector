@@ -9,6 +9,54 @@ permissions:
   contents: read
 
 jobs:
+  release-metadata:
+    name: Sync release lockfile metadata
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/release-0.6.0-final'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Normalize lockfile versions
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
+          node - <<'NODE'
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          const lock = require('./package-lock.json');
+          if (lock.version !== pkg.version || lock.packages?.['']?.version !== pkg.version) {
+            throw new Error(`package-lock version mismatch: ${lock.version}/${lock.packages?.['']?.version} vs ${pkg.version}`);
+          }
+          const cargoLock = fs.readFileSync('src-tauri/Cargo.lock', 'utf8');
+          const escaped = pkg.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const localPackage = new RegExp(`\\[\\[package\\]\\]\\nname = "mail-collector"\\nversion = "${escaped}"(?:\\n|$)`);
+          if (!localPackage.test(cargoLock)) {
+            throw new Error(`Cargo.lock local mail-collector package is not ${pkg.version}`);
+          }
+          NODE
+      - name: Commit generated lockfile updates
+        shell: bash
+        run: |
+          if git diff --quiet -- package-lock.json src-tauri/Cargo.lock; then
+            echo "Lockfile metadata is already synchronized."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json src-tauri/Cargo.lock
+          git commit -m "chore: sync 0.6.0 lockfile metadata"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+
   node:
     name: Node checks
     runs-on: ubuntu-latest
