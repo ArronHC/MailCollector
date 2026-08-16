@@ -98,10 +98,11 @@ fn runtime_settings_backup_path(path: &Path) -> PathBuf {
 }
 
 fn recover_interrupted_runtime_settings_write(path: &Path) -> Result<(), String> {
+    let backup_path = runtime_settings_backup_path(path);
     if path.exists() {
+        let _ = fs::remove_file(&backup_path);
         return Ok(());
     }
-    let backup_path = runtime_settings_backup_path(path);
     if backup_path.exists() {
         fs::copy(&backup_path, path).map_err(|error| format!("恢复桌面密钥配置失败：{error}"))?;
     }
@@ -137,8 +138,6 @@ fn write_runtime_settings_file(path: &Path, content: &str) -> Result<(), String>
         return Err(error.to_string());
     }
 
-    // A backup created from the legacy plaintext format must not remain after
-    // a successful migration. It only exists long enough to recover a crash.
     let _ = fs::remove_file(&backup_path);
     Ok(())
 }
