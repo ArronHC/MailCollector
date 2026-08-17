@@ -29,16 +29,14 @@ html[data-mail-density="spacious"] .mail-row { min-height: 122px; margin-bottom:
 html[data-mail-density="spacious"] .mail-row-body { padding-top: 17px; padding-bottom: 15px; }
 html[data-show-snippets="false"] .mail-preview { display: none; }
 html[data-show-source-badges="false"] .source-badge { display: none; }
-html[data-reading-font-size="small"] .real-email-card, html[data-reading-font-size="small"] .plain-message { font-size: 12px; }
-html[data-reading-font-size="large"] .real-email-card, html[data-reading-font-size="large"] .plain-message { font-size: 15px; }
+html[data-reading-font-size="small"] .plain-message { font-size: 12px; }
+html[data-reading-font-size="large"] .plain-message { font-size: 15px; }
 
-html[data-reader-position="hidden"] .content-grid { grid-template-columns: 236px minmax(0, 1fr); }
-html[data-reader-position="hidden"] .mail-reader-panel { display: none; }
-.app-shell.sidebar-collapsed html[data-reader-position="hidden"] .content-grid { grid-template-columns: 68px minmax(0, 1fr); }
 html[data-reader-position="bottom"] .content-grid { grid-template-columns: 236px minmax(0, 1fr); grid-template-rows: minmax(280px, .9fr) minmax(300px, 1.1fr); }
 html[data-reader-position="bottom"] .sidebar { grid-row: 1 / span 2; }
 html[data-reader-position="bottom"] .mail-list-panel { grid-column: 2; grid-row: 1; }
 html[data-reader-position="bottom"] .mail-reader-panel { grid-column: 2; grid-row: 2; }
+html[data-reader-position="bottom"] .mail-reader-header, html[data-reader-position="bottom"] .reader-message { width: min(980px, calc(100% - 56px)); }
 
 .mail-context-menu { position: fixed; z-index: 500; width: 220px; padding: 6px; border: 1px solid #d8dbd3; border-radius: 14px; background: rgba(255,255,252,.98); box-shadow: 0 18px 45px rgba(32,45,38,.18); backdrop-filter: blur(16px); }
 .mail-context-menu button { display: flex; width: 100%; min-height: 35px; align-items: center; gap: 9px; padding: 0 10px; border: 0; border-radius: 9px; color: #455249; background: transparent; text-align: left; cursor: pointer; }
@@ -51,9 +49,13 @@ html[data-reader-position="bottom"] .mail-reader-panel { grid-column: 2; grid-ro
 .remote-image-actions button { min-height: 34px; padding: 0 12px; border: 0; border-radius: 10px; color: var(--accent); background: var(--accent-soft); cursor: pointer; }
 .remote-image-actions button.secondary { color: #65716a; background: #eceee8; }
 
+@media (max-width: 960px) {
+  html[data-reader-position="bottom"] .content-grid { grid-template-columns: 68px minmax(0, 1fr); }
+}
+
 @media (max-width: 760px) {
   .setting-row { grid-template-columns: 1fr; gap: 8px; padding: 12px 0; }
   .setting-control { justify-content: flex-start; }
   .setting-control select { width: 100%; }
-  html[data-reader-position="bottom"] .content-grid, html[data-reader-position="hidden"] .content-grid { display: block; }
+  html[data-reader-position="bottom"] .content-grid { display: block; }
 }
