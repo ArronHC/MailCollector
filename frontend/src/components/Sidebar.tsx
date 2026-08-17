@@ -1,6 +1,6 @@
-import { Archive, ChevronDown, Clock3, File, Inbox, MailWarning, Plus, Send, Star, Tag, Trash2 } from "lucide-react";
+import { Archive, ChevronDown, Clock3, Copy, File, Inbox, MailWarning, Plus, Send, Settings, Star, Tag, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { MailAccount, MailLabel, MessageView } from "../data/mailData";
 import { accountSource, sourceNames } from "../data/mailData";
 import { AccountBrand } from "./BrandIcons";
@@ -9,13 +9,36 @@ export function ComposeButton({ onClick }: { onClick: () => void }) {
   return <button className="compose-button interactive" onClick={onClick}><Plus /><span>写新邮件</span></button>;
 }
 
-export function AccountItem({ account, active, onClick, onManage }: { account: MailAccount; active: boolean; onClick: () => void; onManage: () => void }) {
+type AccountContextState = { account: MailAccount; x: number; y: number } | null;
+
+export function AccountItem({ account, active, onClick, onManage, onContextMenu }: { account: MailAccount; active: boolean; onClick: () => void; onManage: () => void; onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void }) {
   const source = accountSource(account);
-  return <button className={`account-item interactive${active ? " active" : ""}`} onClick={onClick} onDoubleClick={onManage} title={`${account.email}${account.lastError ? `\n${account.lastError}` : ""}`}><AccountBrand source={source} /><span>{account.name.trim() || sourceNames[source]}</span><b>{account.status === "syncing" || account.status === "backfilling" ? "..." : account.unreadCount}</b></button>;
+  return <button className={`account-item interactive${active ? " active" : ""}`} onClick={onClick} onDoubleClick={onManage} onContextMenu={onContextMenu} title={`${account.email}${account.lastError ? `\n${account.lastError}` : ""}`}><AccountBrand source={source} /><span>{account.name.trim() || sourceNames[source]}</span><b>{account.status === "syncing" || account.status === "backfilling" ? "..." : account.unreadCount}</b></button>;
+}
+
+function AccountContextMenu({ state, onClose, onSelect, onManage }: { state: Exclude<AccountContextState, null>; onClose: () => void; onSelect: (id: number) => void; onManage: () => void }) {
+  useEffect(() => {
+    const close = () => onClose();
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("resize", close);
+    window.addEventListener("blur", close);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("resize", close); window.removeEventListener("blur", close); document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
+  }, [onClose]);
+  const left = Math.min(state.x, Math.max(8, window.innerWidth - 228));
+  const top = Math.min(state.y, Math.max(8, window.innerHeight - 170));
+  return <div className="mail-context-menu account-context-menu" role="menu" style={{ left, top }} onMouseDown={(event) => event.stopPropagation()}>
+    <div className="account-context-head"><strong>{state.account.name || "邮箱账户"}</strong><span>{state.account.email}</span></div>
+    <button role="menuitem" onClick={() => { onSelect(state.account.id); onClose(); }}><Inbox />打开此邮箱</button>
+    <button role="menuitem" onClick={() => { onManage(); onClose(); }}><Settings />管理账户</button>
+    <button role="menuitem" onClick={() => { void navigator.clipboard.writeText(state.account.email).catch(() => undefined); onClose(); }}><Copy />复制邮箱地址</button>
+  </div>;
 }
 
 export function AccountList({ accounts, activeAccountId, onSelect, onAdd, onManage }: { accounts: MailAccount[]; activeAccountId: number | null; onSelect: (id: number) => void; onAdd: () => void; onManage: () => void }) {
-  return <section className="account-list"><div className="sidebar-section-title"><span>邮箱账户</span><button className="interactive" aria-label="添加账户" onClick={onAdd}><Plus /></button></div>{accounts.map((account) => <AccountItem key={account.id} account={account} active={activeAccountId === account.id} onClick={() => onSelect(account.id)} onManage={onManage} />)}{!accounts.length ? <button className="empty-account" onClick={onAdd}>添加第一个邮箱</button> : null}</section>;
+  const [contextMenu, setContextMenu] = useState<AccountContextState>(null);
+  return <section className="account-list"><div className="sidebar-section-title"><span>邮箱账户</span><button className="interactive" aria-label="添加账户" onClick={onAdd}><Plus /></button></div>{accounts.map((account) => <AccountItem key={account.id} account={account} active={activeAccountId === account.id} onClick={() => onSelect(account.id)} onManage={onManage} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ account, x: event.clientX, y: event.clientY }); }} />)}{!accounts.length ? <button className="empty-account" onClick={onAdd}>添加第一个邮箱</button> : null}{contextMenu ? <AccountContextMenu state={contextMenu} onClose={() => setContextMenu(null)} onSelect={onSelect} onManage={onManage} /> : null}</section>;
 }
 
 interface NavigationItemProps { label: string; icon: LucideIcon; count?: number; active: boolean; onClick: () => void; }
