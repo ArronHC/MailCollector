@@ -1,10 +1,14 @@
-import { useEffect } from "react";
-import { Archive, ChevronDown, ChevronLeft, ChevronRight, Clock3, Inbox, Mail, MailOpen, MoreVertical, Paperclip, RefreshCw, Star, Tag, Trash2, TriangleAlert } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Archive, ChevronDown, ChevronLeft, ChevronRight, Clock3, Copy, ExternalLink, Inbox, Mail, MailOpen, MoreVertical, Paperclip, RefreshCw, Star, Tag, Trash2, TriangleAlert } from "lucide-react";
 import type { MailAccount, MailItem, MailLabel, MailSource, MessageActions, MessageFolder } from "../data/mailData";
 import { formatListTime, messageSource, sourceNames } from "../data/mailData";
 import { snoozeIso } from "../data/snooze";
 import { AccountBrand } from "./BrandIcons";
 import { MenuButton, Popover } from "./Ui";
+
+export type MailContextAction = "open" | "open-window" | "toggle-read" | "toggle-star" | "archive" | "spam" | "trash" | "copy-sender";
+
+type ContextState = { mail: MailItem; x: number; y: number } | null;
 
 export function SourceBadge({ source }: { source: MailSource }) {
   return <span className={`source-badge ${source}`}><AccountBrand source={source} /><span>{sourceNames[source]}</span></span>;
@@ -53,7 +57,7 @@ export function MailTabs({ active, accounts, onChange }: { active: string; accou
   return <div className="mail-tabs">{tabs.map((tab) => <button key={tab} className={`interactive${active === tab ? " active" : ""}`} onClick={() => onChange(tab)}>{tab}</button>)}</div>;
 }
 
-export function MailRow({ mail, selected, checked, showSource, onCheck, onSelect, onStar }: { mail: MailItem; selected: boolean; checked: boolean; showSource: boolean; onCheck: () => void; onSelect: () => void; onStar: () => void }) {
+export function MailRow({ mail, selected, checked, showSource, onCheck, onSelect, onStar, onContextMenu }: { mail: MailItem; selected: boolean; checked: boolean; showSource: boolean; onCheck: () => void; onSelect: () => void; onStar: () => void; onContextMenu: (event: React.MouseEvent<HTMLElement>) => void }) {
   const sender = mail.kind === "sent" || mail.kind === "draft" ? `收件人：${mail.toText || "未填写"}` : mail.fromName || mail.fromAddress || "未知发件人";
   const openWithKeyboard = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -61,19 +65,46 @@ export function MailRow({ mail, selected, checked, showSource, onCheck, onSelect
       onSelect();
     }
   };
-  return <article className={`mail-row interactive-row${selected ? " selected" : ""}${mail.isRead ? " is-read" : " is-unread"}`} role="button" tabIndex={0} aria-selected={selected} onKeyDown={openWithKeyboard} onClick={onSelect}><div className="mail-checkbox"><input type="checkbox" checked={checked} onChange={onCheck} onClick={(event) => event.stopPropagation()} aria-label={`选择 ${mail.subject || "无主题邮件"}`} /></div><div className="mail-row-body"><div className="mail-row-top"><strong>{sender}</strong><time>{formatListTime(mail.receivedAt)}</time></div><div className="mail-subject">{mail.subject || "(无主题)"}</div><div className="mail-preview">{mail.snippet || (mail.kind === "draft" ? "草稿" : "无正文摘要")}</div>{showSource ? <SourceBadge source={messageSource(mail)} /> : null}{mail.labels.map((label) => <span className="row-label" key={label.id}>{label.name}</span>)}{mail.hasAttachments ? <Paperclip className="attachment-icon" /> : null}</div><button className={`row-star interactive${mail.isStarred ? " starred" : ""}`} onClick={(event) => { event.stopPropagation(); onStar(); }} aria-label={mail.isStarred ? "取消加星" : "加星"}><Star fill={mail.isStarred ? "currentColor" : "none"} /></button></article>;
+  return <article className={`mail-row interactive-row${selected ? " selected" : ""}${mail.isRead ? " is-read" : " is-unread"}`} role="button" tabIndex={0} aria-selected={selected} onKeyDown={openWithKeyboard} onClick={onSelect} onContextMenu={onContextMenu}><div className="mail-checkbox"><input type="checkbox" checked={checked} onChange={onCheck} onClick={(event) => event.stopPropagation()} aria-label={`选择 ${mail.subject || "无主题邮件"}`} /></div><div className="mail-row-body"><div className="mail-row-top"><strong>{sender}</strong><time>{formatListTime(mail.receivedAt)}</time></div><div className="mail-subject">{mail.subject || "(无主题)"}</div><div className="mail-preview">{mail.snippet || (mail.kind === "draft" ? "草稿" : "无正文摘要")}</div>{showSource ? <SourceBadge source={messageSource(mail)} /> : null}{mail.labels.map((label) => <span className="row-label" key={label.id}>{label.name}</span>)}{mail.hasAttachments ? <Paperclip className="attachment-icon" /> : null}</div><button className={`row-star interactive${mail.isStarred ? " starred" : ""}`} onClick={(event) => { event.stopPropagation(); onStar(); }} aria-label={mail.isStarred ? "取消加星" : "加星"}><Star fill={mail.isStarred ? "currentColor" : "none"} /></button></article>;
+}
+
+function ContextMenu({ state, onClose, onAction }: { state: Exclude<ContextState, null>; onClose: () => void; onAction: (mail: MailItem, action: MailContextAction) => void }) {
+  useEffect(() => {
+    const close = () => onClose();
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("resize", close);
+    window.addEventListener("blur", close);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("resize", close); window.removeEventListener("blur", close); document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
+  }, [onClose]);
+  const left = Math.min(state.x, Math.max(8, window.innerWidth - 228));
+  const top = Math.min(state.y, Math.max(8, window.innerHeight - 330));
+  const run = (action: MailContextAction) => { onAction(state.mail, action); onClose(); };
+  return <div className="mail-context-menu" role="menu" style={{ left, top }} onMouseDown={(event) => event.stopPropagation()}>
+    <button role="menuitem" onClick={() => run("open")}><MailOpen />打开</button>
+    <button role="menuitem" onClick={() => run("open-window")}><ExternalLink />在新窗口中打开</button>
+    <div className="context-separator" />
+    <button role="menuitem" onClick={() => run("toggle-read")}>{state.mail.isRead ? <Mail /> : <MailOpen />}{state.mail.isRead ? "标记为未读" : "标记为已读"}</button>
+    <button role="menuitem" onClick={() => run("toggle-star")}><Star />{state.mail.isStarred ? "取消星标" : "添加星标"}</button>
+    <button role="menuitem" onClick={() => run("archive")}><Archive />归档</button>
+    <button role="menuitem" onClick={() => run("spam")}><TriangleAlert />标记为垃圾邮件</button>
+    <button role="menuitem" className="danger" onClick={() => run("trash")}><Trash2 />移至垃圾箱</button>
+    {state.mail.fromAddress ? <><div className="context-separator" /><button role="menuitem" onClick={() => run("copy-sender")}><Copy />复制发件人地址</button></> : null}
+  </div>;
 }
 
 interface MailListPanelProps {
   mails: MailItem[]; accounts: MailAccount[]; labels: MailLabel[]; activeAccount: MailAccount | null; title: string; activeTab: string; activeMailId: number | null; checkedIds: Set<number>; total: number; offset: number; loading: boolean; syncing: boolean; error: string; trashView: boolean;
-  onTabChange: (tab: string) => void; onSelect: (mail: MailItem) => void; onStar: (id: number) => void; onCheck: (id: number) => void; onCheckAll: () => void; onSelectWhere: (where: "all" | "none" | "read" | "unread" | "starred") => void; onRefresh: () => void; onBulk: (actions: MessageActions) => void; onPermanentDelete: () => void; onPrevious: () => void; onNext: () => void;
+  onTabChange: (tab: string) => void; onSelect: (mail: MailItem) => void; onStar: (id: number) => void; onCheck: (id: number) => void; onCheckAll: () => void; onSelectWhere: (where: "all" | "none" | "read" | "unread" | "starred") => void; onRefresh: () => void; onBulk: (actions: MessageActions) => void; onPermanentDelete: () => void; onPrevious: () => void; onNext: () => void; onContextAction: (mail: MailItem, action: MailContextAction) => void;
 }
 
 export function MailListPanel(props: MailListPanelProps) {
-  const { mails, accounts, labels, activeAccount, title, activeTab, activeMailId, checkedIds, total, offset, loading, syncing, error, trashView, onTabChange, onSelect, onStar, onCheck, onCheckAll, onSelectWhere, onRefresh, onBulk, onPermanentDelete, onPrevious, onNext } = props;
+  const { mails, accounts, labels, activeAccount, title, activeTab, activeMailId, checkedIds, total, offset, loading, syncing, error, trashView, onTabChange, onSelect, onStar, onCheck, onCheckAll, onSelectWhere, onRefresh, onBulk, onPermanentDelete, onPrevious, onNext, onContextAction } = props;
+  const [contextMenu, setContextMenu] = useState<ContextState>(null);
   const sourceCount = new Set(accounts.map((account) => messageSource({ accountName: account.name, accountEmail: account.email }))).size;
   useEffect(() => {
     if (!loading && offset > 0 && offset >= total) onPrevious();
   }, [loading, offset, total, onPrevious]);
-  return <section className="mail-list-panel"><MailListToolbar checkedCount={checkedIds.size} allChecked={mails.length > 0 && mails.every((mail) => checkedIds.has(mail.id))} onCheckAll={onCheckAll} onSelectWhere={onSelectWhere} onRefresh={onRefresh} syncing={syncing} total={total} offset={offset} shown={mails.length} trashView={trashView} labels={labels} onBulk={onBulk} onPermanentDelete={onPermanentDelete} onPrevious={onPrevious} onNext={onNext} /><div className="mailbox-header"><MailboxHeader accountCount={accounts.length} activeAccount={activeAccount} title={title} /><MailTabs active={activeTab} accounts={activeAccount ? [] : accounts} onChange={onTabChange} /></div><div className="mail-list-scroll">{loading ? <div className="panel-state loading-pulse">正在加载邮件...</div> : error ? <div className="panel-state error-state"><strong>无法加载邮件</strong><span>{error}</span><button onClick={onRefresh}>重试</button></div> : mails.length ? mails.map((mail) => <MailRow key={mail.id} mail={mail} selected={activeMailId === mail.id} checked={checkedIds.has(mail.id)} showSource={!activeAccount && sourceCount > 1} onCheck={() => onCheck(mail.id)} onSelect={() => onSelect(mail)} onStar={() => onStar(mail.id)} />) : <div className="panel-state"><Mail size={38} /><strong>这里没有邮件</strong><span>{accounts.length ? "调整筛选条件，或点击刷新同步邮箱。" : "请先添加邮箱账户。"}</span></div>}</div></section>;
+  return <section className="mail-list-panel"><MailListToolbar checkedCount={checkedIds.size} allChecked={mails.length > 0 && mails.every((mail) => checkedIds.has(mail.id))} onCheckAll={onCheckAll} onSelectWhere={onSelectWhere} onRefresh={onRefresh} syncing={syncing} total={total} offset={offset} shown={mails.length} trashView={trashView} labels={labels} onBulk={onBulk} onPermanentDelete={onPermanentDelete} onPrevious={onPrevious} onNext={onNext} /><div className="mailbox-header"><MailboxHeader accountCount={accounts.length} activeAccount={activeAccount} title={title} /><MailTabs active={activeTab} accounts={activeAccount ? [] : accounts} onChange={onTabChange} /></div><div className="mail-list-scroll">{loading ? <div className="panel-state loading-pulse">正在加载邮件...</div> : error ? <div className="panel-state error-state"><strong>无法加载邮件</strong><span>{error}</span><button onClick={onRefresh}>重试</button></div> : mails.length ? mails.map((mail) => <MailRow key={mail.id} mail={mail} selected={activeMailId === mail.id} checked={checkedIds.has(mail.id)} showSource={!activeAccount && sourceCount > 1} onCheck={() => onCheck(mail.id)} onSelect={() => onSelect(mail)} onStar={() => onStar(mail.id)} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ mail, x: event.clientX, y: event.clientY }); }} />) : <div className="panel-state"><Mail size={38} /><strong>这里没有邮件</strong><span>{accounts.length ? "调整筛选条件，或点击刷新同步邮箱。" : "请先添加邮箱账户。"}</span></div>}</div>{contextMenu ? <ContextMenu state={contextMenu} onClose={() => setContextMenu(null)} onAction={onContextAction} /> : null}</section>;
 }
