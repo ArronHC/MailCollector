@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { MailDetail, MailLabel, MessageActions, MessageFolder } from "../data/mailData";
 import { formatDetailTime, messageSource, sourceNames } from "../data/mailData";
 import { snoozeIso } from "../data/snooze";
+import { trustRemoteImageSender, useAppSettings } from "../settings";
 import { MenuButton, Popover } from "./Ui";
 
 function ToolButton({ label, disabled, onClick, children }: { label: string; disabled?: boolean; onClick?: () => void; children: React.ReactNode }) {
@@ -55,13 +56,17 @@ function containsRemoteImages(html: string): boolean {
 }
 
 export function RealEmailContent({ mail }: { mail: MailDetail }) {
-  const [remoteImagesAllowed, setRemoteImagesAllowed] = useState(false);
-  useEffect(() => setRemoteImagesAllowed(false), [mail.id]);
+  const settings = useAppSettings();
+  const [manualRemoteImagesAllowed, setManualRemoteImagesAllowed] = useState(false);
+  useEffect(() => setManualRemoteImagesAllowed(false), [mail.id]);
 
   if (mail.bodyStatus !== "fetched") return <div className="real-email-card body-unavailable"><strong>{mail.bodyStatus === "fetching" ? "正在获取邮件正文" : mail.bodyStatus === "not_fetched" ? "邮件正文尚未下载" : "邮件正文获取失败"}</strong><p>{mail.bodyError || mail.snippet || "暂无可显示的正文。"}</p></div>;
   if (mail.htmlBody) {
     const hasRemoteImages = containsRemoteImages(mail.htmlBody);
-    return <div className="real-email-card">{hasRemoteImages && !remoteImagesAllowed ? <div className="body-unavailable"><strong>已阻止远程图片</strong><p>远程图片可能用于跟踪邮件打开时间和网络地址。</p><button className="interactive" type="button" onClick={() => setRemoteImagesAllowed(true)}>显示这封邮件的远程图片</button></div> : null}<iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody, remoteImagesAllowed)} title="邮件正文" /></div>;
+    const sender = mail.fromAddress?.trim().toLowerCase() ?? "";
+    const policyAllows = settings.remoteImagePolicy === "always" || (settings.remoteImagePolicy === "trusted" && Boolean(sender) && settings.trustedRemoteImageSenders.includes(sender));
+    const remoteImagesAllowed = policyAllows || manualRemoteImagesAllowed;
+    return <div className="real-email-card">{hasRemoteImages && !remoteImagesAllowed ? <div className="body-unavailable"><strong>已阻止远程图片</strong><p>远程图片可能用于跟踪邮件打开时间和网络地址。</p><div className="remote-image-actions"><button className="interactive" type="button" onClick={() => setManualRemoteImagesAllowed(true)}>显示这封邮件的图片</button>{sender ? <button className="interactive secondary" type="button" onClick={() => trustRemoteImageSender(sender)}>始终显示此发件人的图片</button> : null}</div></div> : null}<iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody, remoteImagesAllowed)} title="邮件正文" /></div>;
   }
   return <div className="real-email-card plain-message">{mail.textBody || mail.snippet || "这封邮件没有可显示的正文。"}</div>;
 }
