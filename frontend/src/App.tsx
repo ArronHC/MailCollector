@@ -3,14 +3,16 @@ import { flushSync } from "react-dom";
 import { api, auth, unauthorizedEvent } from "./api";
 import { AccountDialog, type AccountForm } from "./components/AccountDialog";
 import { ComposeDialog, type ComposeSeed } from "./components/ComposeDialog";
-import { MailListPanel } from "./components/MailListPanel";
+import { MailListPanel, type MailContextAction } from "./components/MailListPanel";
 import { MailReaderPanel } from "./components/MailReaderPanel";
 import { LoginScreen } from "./components/LoginScreen";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { SyncProgressBar, TopBar } from "./components/TopBar";
 import { Modal, ToastStack, type ToastMessage } from "./components/Ui";
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions, MessageView } from "./data/mailData";
 import { accountSource, formatLastSync, sourceNames } from "./data/mailData";
+import { useAppSettings } from "./settings";
 
 const PAGE_SIZE = 15;
 const REMOTE_REFRESH_MS = 15_000;
@@ -69,6 +71,7 @@ export default function App() {
 }
 
 function MailboxApp({ onLogout }: { onLogout: () => void }) {
+  const settings = useAppSettings();
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
   const [providers, setProviders] = useState<MailProvider[]>([]);
   const [labels, setLabels] = useState<MailLabel[]>([]);
@@ -96,6 +99,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [composeOpen, setComposeOpen] = useState(false);
@@ -165,13 +169,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
         setCheckedIds((current) => new Set([...current].filter((id) => visible.has(id))));
       } else setCheckedIds(new Set());
       if (activeMailId && !data.messages.some((mail) => mail.id === activeMailId) && !new URLSearchParams(location.search).has("message")) {
-        detailRequestSequence.current += 1;
-        activeMailIdRef.current = null;
-        readerLoadingRef.current = false;
-        setReaderLoading(false);
-        setReaderError("");
-        setActiveMailId(null);
-        setMailDetail(null);
+        closeReader();
       }
     } catch (error) {
       if (requestId === messageRequestSequence.current) setListError(error instanceof Error ? error.message : "无法加载邮件");
@@ -240,7 +238,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
       if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
       setMailDetail(message);
       if (message.bodyStatus !== "fetched" && message.kind === "received") pollMessageBody(id, requestId);
-      if (!message.isRead && message.kind === "received") {
+      if (settings.markReadOnOpen && !message.isRead && message.kind === "received") {
         const result = await api.updateMessage(id, { isRead: true });
         if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
         setMailDetail(result.message);
@@ -311,7 +309,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     if (!mailDetail) return;
     if (mailDetail.folder !== "trash") return updateOne(mailDetail.id, { folder: "trash", snoozedUntil: null }, "已移至垃圾箱");
     if (!window.confirm("永久删除这封本地邮件？此操作无法撤销。")) return;
-    try { await api.deleteMessage(mailDetail.id); detailRequestSequence.current += 1; activeMailIdRef.current = null; readerLoadingRef.current = false; setReaderLoading(false); setReaderError(""); setMailDetail(null); setActiveMailId(null); await Promise.all([loadMessages(), loadMetadata()]); toast("邮件已永久删除"); } catch (error) { toast(error instanceof Error ? error.message : "删除失败", "error"); }
+    try { await api.deleteMessage(mailDetail.id); closeReader(); await Promise.all([loadMessages(), loadMetadata()]); toast("邮件已永久删除"); } catch (error) { toast(error instanceof Error ? error.message : "删除失败", "error"); }
   }
 
   async function bulkAction(actions: MessageActions) {
@@ -362,12 +360,33 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   }
 
   function openCompose(seed: ComposeSeed = {}) { setComposeSeed(seed); setComposeStatus(""); setComposeOpen(true); }
-  function toggleReaderExpanded() {
-    transitionState(() => setReaderExpanded((value) => !value), "reader");
+  function toggleReaderExpanded() { transitionState(() => setReaderExpanded((value) => !value), "reader"); }
+  function closeReader() {
+    detailRequestSequence.current += 1;
+    activeMailIdRef.current = null;
+    readerLoadingRef.current = false;
+    setReaderLoading(false);
+    setReaderError("");
+    setReaderExpanded(false);
+    setActiveMailId(null);
+    setMailDetail(null);
   }
   function reply() {
     if (!mailDetail) return;
     openCompose({ accountId: mailDetail.accountId, to: mailDetail.fromAddress ? [mailDetail.fromAddress] : [], subject: mailDetail.subject.startsWith("Re:") ? mailDetail.subject : `Re: ${mailDetail.subject}`, body: `\n\n---- 原始邮件 ----\n发件人：${mailDetail.fromAddress || mailDetail.fromName || ""}\n日期：${new Date(mailDetail.receivedAt).toLocaleString("zh-CN")}\n主题：${mailDetail.subject}\n\n${mailDetail.textBody || mailDetail.snippet}` });
+  }
+
+  function handleContextAction(mail: MailItem, action: MailContextAction) {
+    if (action === "open") { void selectMail(mail); return; }
+    if (action === "open-window") { window.open(`/?message=${mail.id}`, "_blank", "noopener"); return; }
+    if (action === "toggle-read") { void updateOne(mail.id, { isRead: !mail.isRead }, mail.isRead ? "已标记为未读" : "已标记为已读"); return; }
+    if (action === "toggle-star") { void updateOne(mail.id, { isStarred: !mail.isStarred }, "星标状态已更新"); return; }
+    if (action === "archive") { void updateOne(mail.id, { folder: "archive", snoozedUntil: null }, "已归档"); return; }
+    if (action === "spam") { void updateOne(mail.id, { folder: "spam", snoozedUntil: null }, "已标记为垃圾邮件"); return; }
+    if (action === "trash") { void updateOne(mail.id, { folder: "trash", snoozedUntil: null }, "已移至垃圾箱"); return; }
+    if (action === "copy-sender" && mail.fromAddress) {
+      void navigator.clipboard.writeText(mail.fromAddress).then(() => toast("已复制发件人地址", "info")).catch(() => toast("无法复制发件人地址", "error"));
+    }
   }
 
   async function closeCompose(content: DraftContent, draftId?: number, discard = false) {
@@ -407,16 +426,50 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     try { await api.createLabel(name); setNewLabel(""); setLabelOpen(false); await loadMetadata(); toast("标签已创建"); } catch (error) { toast(error instanceof Error ? error.message : "创建标签失败", "error"); }
   }
 
+  useEffect(() => {
+    if (!settings.keyboardShortcutsEnabled) return;
+    const keydown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || Boolean(target?.isContentEditable);
+      if (typing || composeOpen || dialogOpen || helpOpen || settingsOpen || labelOpen || event.ctrlKey || event.metaKey || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "/") {
+        event.preventDefault();
+        document.querySelector<HTMLInputElement>(".top-search input")?.focus();
+        return;
+      }
+      if (key === "c") { event.preventDefault(); openCompose(); return; }
+      if (key === "escape" && mailDetail) { event.preventDefault(); closeReader(); return; }
+      const currentIndex = mails.findIndex((mail) => mail.id === activeMailId);
+      if ((key === "j" || key === "k") && mails.length) {
+        event.preventDefault();
+        const fallback = key === "j" ? 0 : mails.length - 1;
+        const nextIndex = currentIndex < 0 ? fallback : Math.max(0, Math.min(mails.length - 1, currentIndex + (key === "j" ? 1 : -1)));
+        const next = mails[nextIndex];
+        if (next) void selectMail(next);
+        return;
+      }
+      if (!mailDetail) return;
+      if (key === "e") { event.preventDefault(); void updateOne(mailDetail.id, { folder: "archive", snoozedUntil: null }, "已归档"); }
+      else if (key === "s") { event.preventDefault(); void updateOne(mailDetail.id, { isStarred: !mailDetail.isStarred }, "星标状态已更新"); }
+      else if (key === "u") { event.preventDefault(); void updateOne(mailDetail.id, { isRead: !mailDetail.isRead }, mailDetail.isRead ? "已标记为未读" : "已标记为已读"); }
+      else if (key === "r") { event.preventDefault(); reply(); }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => document.removeEventListener("keydown", keydown);
+  }, [settings.keyboardShortcutsEnabled, composeOpen, dialogOpen, helpOpen, settingsOpen, labelOpen, mails, activeMailId, mailDetail]);
+
   return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <SyncProgressBar active={activeSync} />
-    <TopBar search={search} onSearch={setSearch} accountCount={accounts.length} syncing={activeSync} classifying={classifying} error={syncError} lastSyncLabel={lastSyncLabel} backendLabel={backendLabel} onSync={() => void syncMailbox()} onClassify={() => void classifyMailbox()} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onHelp={() => setHelpOpen(true)} onManageAccounts={() => setDialogOpen(true)} onLogout={onLogout} />
+    <TopBar search={search} onSearch={setSearch} accountCount={accounts.length} syncing={activeSync} classifying={classifying} error={syncError} lastSyncLabel={lastSyncLabel} backendLabel={backendLabel} onSync={() => void syncMailbox()} onClassify={() => void classifyMailbox()} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onHelp={() => setHelpOpen(true)} onSettings={() => setSettingsOpen(true)} onManageAccounts={() => setDialogOpen(true)} onLogout={onLogout} />
     <div className="content-grid"><Sidebar accounts={accounts} labels={labels} activeAccountId={activeAccountId} activeNavigation={activeNavigation} activeLabelId={activeLabelId} unreadCount={unreadCount} draftCount={draftCount} onAccountSelect={(id) => { setActiveAccountId(id); setActiveNavigation(""); setActiveLabelId(null); setView("inbox"); setStarredFilter(false); setActiveTab("全部"); setOffset(0); }} onViewChange={(label, nextView, starred) => { setActiveAccountId(null); setActiveNavigation(label); setActiveLabelId(null); setView(nextView); setStarredFilter(Boolean(starred)); setActiveTab("全部"); setOffset(0); }} onLabelSelect={(label) => { setActiveAccountId(null); setActiveNavigation(label.name); setActiveLabelId(label.id); setView("all"); setStarredFilter(false); setOffset(0); }} onCompose={() => openCompose()} onAddAccount={() => setDialogOpen(true)} onManageAccount={() => setDialogOpen(true)} onCreateLabel={() => setLabelOpen(true)} />
-      <MailListPanel mails={mails} accounts={accounts} labels={labels} activeAccount={activeAccount} title={activeNavigation || "收件箱"} activeTab={activeTab} activeMailId={activeMailId} checkedIds={checkedIds} total={total} offset={offset} loading={loading} syncing={syncing} error={listError} trashView={view === "trash"} onTabChange={(tab) => { setActiveTab(tab); setOffset(0); }} onSelect={(mail) => void selectMail(mail)} onStar={(id) => void updateOne(id, { isStarred: !mails.find((mail) => mail.id === id)?.isStarred }, "星标状态已更新")} onCheck={(id) => setCheckedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onCheckAll={() => setCheckedIds((current) => mails.length && mails.every((mail) => current.has(mail.id)) ? new Set() : new Set(mails.map((mail) => mail.id)))} onSelectWhere={selectWhere} onRefresh={() => void syncMailbox()} onBulk={(actions) => void bulkAction(actions)} onPermanentDelete={() => void permanentDeleteSelected()} onPrevious={() => setOffset(Math.max(0, offset - PAGE_SIZE))} onNext={() => setOffset(offset + PAGE_SIZE)} />
-      <MailReaderPanel mail={mailDetail} loading={readerLoading} error={readerError} labels={labels} expanded={readerExpanded} onToggleExpanded={toggleReaderExpanded} onAction={(actions) => { if (mailDetail) void updateOne(mailDetail.id, actions); }} onDelete={() => void deleteCurrent()} onStar={() => { if (mailDetail) void updateOne(mailDetail.id, { isStarred: !mailDetail.isStarred }, "星标状态已更新"); }} onReply={reply} onBack={() => { detailRequestSequence.current += 1; activeMailIdRef.current = null; readerLoadingRef.current = false; setReaderLoading(false); setReaderError(""); setReaderExpanded(false); setActiveMailId(null); setMailDetail(null); }} />
+      <MailListPanel mails={mails} accounts={accounts} labels={labels} activeAccount={activeAccount} title={activeNavigation || "收件箱"} activeTab={activeTab} activeMailId={activeMailId} checkedIds={checkedIds} total={total} offset={offset} loading={loading} syncing={syncing} error={listError} trashView={view === "trash"} onTabChange={(tab) => { setActiveTab(tab); setOffset(0); }} onSelect={(mail) => void selectMail(mail)} onStar={(id) => void updateOne(id, { isStarred: !mails.find((mail) => mail.id === id)?.isStarred }, "星标状态已更新")} onCheck={(id) => setCheckedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onCheckAll={() => setCheckedIds((current) => mails.length && mails.every((mail) => current.has(mail.id)) ? new Set() : new Set(mails.map((mail) => mail.id)))} onSelectWhere={selectWhere} onRefresh={() => void syncMailbox()} onBulk={(actions) => void bulkAction(actions)} onPermanentDelete={() => void permanentDeleteSelected()} onPrevious={() => setOffset(Math.max(0, offset - PAGE_SIZE))} onNext={() => setOffset(offset + PAGE_SIZE)} onContextAction={handleContextAction} />
+      <MailReaderPanel mail={mailDetail} loading={readerLoading} error={readerError} labels={labels} expanded={readerExpanded} onToggleExpanded={toggleReaderExpanded} onAction={(actions) => { if (mailDetail) void updateOne(mailDetail.id, actions); }} onDelete={() => void deleteCurrent()} onStar={() => { if (mailDetail) void updateOne(mailDetail.id, { isStarred: !mailDetail.isStarred }, "星标状态已更新"); }} onReply={reply} onBack={closeReader} />
     </div>
     <AccountDialog open={dialogOpen} providers={providers} accounts={accounts} busy={dialogBusy} error={dialogError} onClose={() => { setDialogOpen(false); setDialogError(""); }} onSubmit={addAccount} onSync={(account) => manageAccount("sync", account)} onToggle={(account) => manageAccount("toggle", account)} onDelete={(account) => manageAccount("delete", account)} />
     <ComposeDialog open={composeOpen} accounts={accounts} seed={composeSeed} busy={composeBusy} status={composeStatus} onClose={(content, id, discard) => void closeCompose(content, id, discard)} onSend={(content, id) => void sendMessage(content, id)} />
-    <Modal open={helpOpen} title="Mail Collector 帮助" onClose={() => setHelpOpen(false)}><div className="help-content"><p>使用顶部搜索查找发件人、主题和正文内容。勾选邮件后可批量归档、移动、延后或添加标签。</p><p>自动分类会在同步新邮件时运行，也可通过顶部按钮重新分析已有邮件。分类和邮件内容始终保存在本机。</p><p>邮件、草稿和标签仅保存在本机；已读与星标状态会通过邮箱服务商同步到其他设备。</p><p>快捷提示：双击写信窗口标题可最小化；关闭有内容的写信窗口会自动保存草稿。</p></div></Modal>
+    <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    <Modal open={helpOpen} title="Mail Collector 帮助" onClose={() => setHelpOpen(false)}><div className="help-content"><p>使用顶部搜索查找发件人、主题和正文内容。勾选邮件后可批量归档、移动、延后或添加标签。</p><p>右键邮件可快速标记已读、星标、归档、移入垃圾箱或在新窗口打开。</p><p>快捷键：J/K 切换邮件，E 归档，S 星标，U 切换已读，R 回复，C 写信，/ 搜索，Esc 返回。</p><p>邮件、草稿和标签仅保存在本机；已读与星标状态会通过邮箱服务商同步到其他设备。</p></div></Modal>
     <Modal open={labelOpen} title="新建标签" onClose={() => setLabelOpen(false)} className="small-modal"><div className="label-create"><input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} placeholder="标签名称" autoFocus onKeyDown={(event) => { if (event.key === "Enter") void createLabel(); }} /><footer><button onClick={() => setLabelOpen(false)}>取消</button><button className="primary-action" onClick={() => void createLabel()} disabled={!newLabel.trim()}>创建</button></footer></div></Modal>
     <ToastStack toasts={toasts} dismiss={(id) => setToasts((current) => current.filter((item) => item.id !== id))} />
   </div>;
