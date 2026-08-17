@@ -79,8 +79,14 @@ function ContextMenu({ state, onClose, onAction }: { state: Exclude<ContextState
     return () => { window.removeEventListener("resize", close); window.removeEventListener("blur", close); document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
   }, [onClose]);
   const left = Math.min(state.x, Math.max(8, window.innerWidth - 228));
-  const top = Math.min(state.y, Math.max(8, window.innerHeight - 330));
+  const top = Math.min(state.y, Math.max(8, window.innerHeight - (state.mail.kind === "received" ? 330 : 160)));
   const run = (action: MailContextAction) => { onAction(state.mail, action); onClose(); };
+  if (state.mail.kind === "draft") {
+    return <div className="mail-context-menu" role="menu" style={{ left, top }} onMouseDown={(event) => event.stopPropagation()}><button role="menuitem" onClick={() => run("open")}><MailOpen />编辑草稿</button></div>;
+  }
+  if (state.mail.kind === "sent") {
+    return <div className="mail-context-menu" role="menu" style={{ left, top }} onMouseDown={(event) => event.stopPropagation()}><button role="menuitem" onClick={() => run("open")}><MailOpen />打开</button><button role="menuitem" onClick={() => run("open-window")}><ExternalLink />在新窗口中打开</button><div className="context-separator" /><button role="menuitem" onClick={() => run("toggle-star")}><Star />{state.mail.isStarred ? "取消星标" : "添加星标"}</button></div>;
+  }
   return <div className="mail-context-menu" role="menu" style={{ left, top }} onMouseDown={(event) => event.stopPropagation()}>
     <button role="menuitem" onClick={() => run("open")}><MailOpen />打开</button>
     <button role="menuitem" onClick={() => run("open-window")}><ExternalLink />在新窗口中打开</button>
