@@ -12,7 +12,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     <div className="settings-shell">
       <section className="settings-section">
         <header><LayoutPanelLeft /><div><h3>外观与布局</h3><p>调整三栏工作区和邮件列表的信息密度。</p></div></header>
-        <SettingRow title="阅读窗格" detail="选择阅读器放置方式。"><select value={settings.readerPosition} onChange={(event) => updateAppSettings({ readerPosition: event.target.value as typeof settings.readerPosition })}><option value="right">右侧</option><option value="bottom">底部</option><option value="hidden">隐藏</option></select></SettingRow>
+        <SettingRow title="阅读窗格" detail="在宽屏三栏和上下分栏之间切换。"><select value={settings.readerPosition} onChange={(event) => updateAppSettings({ readerPosition: event.target.value as typeof settings.readerPosition })}><option value="right">右侧</option><option value="bottom">底部</option></select></SettingRow>
         <SettingRow title="邮件列表密度" detail="控制每封邮件占用的垂直空间。"><select value={settings.listDensity} onChange={(event) => updateAppSettings({ listDensity: event.target.value as typeof settings.listDensity })}><option value="compact">紧凑</option><option value="comfortable">标准</option><option value="spacious">宽松</option></select></SettingRow>
         <SettingRow title="显示正文摘要" detail="在列表中展示邮件摘要。"><input type="checkbox" checked={settings.showSnippets} onChange={(event) => updateAppSettings({ showSnippets: event.target.checked })} /></SettingRow>
         <SettingRow title="显示账户来源" detail="聚合视图中显示 Gmail、Outlook 等来源标记。"><input type="checkbox" checked={settings.showSourceBadges} onChange={(event) => updateAppSettings({ showSourceBadges: event.target.checked })} /></SettingRow>
