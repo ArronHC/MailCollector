@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { MailDetail, MailLabel, MessageActions, MessageFolder } from "../data/mailData";
 import { formatDetailTime, messageSource, sourceNames } from "../data/mailData";
 import { snoozeIso } from "../data/snooze";
-import { trustRemoteImageSender, useAppSettings } from "../settings";
+import { trustRemoteImageSender, useAppSettings, type ReadingFontSize } from "../settings";
 import { MenuButton, Popover } from "./Ui";
 
 function ToolButton({ label, disabled, onClick, children }: { label: string; disabled?: boolean; onClick?: () => void; children: React.ReactNode }) {
@@ -41,9 +41,10 @@ export function MailHeader({ mail, onStar, onReply }: { mail: MailDetail; onStar
   return <div className="mail-reader-header"><div className="reader-title"><h2>{mail.subject || "(无主题)"}</h2></div><div className="reader-context"><span>{folderName(mail)}</span>{mail.labels.map((label) => <span className="reader-label" key={label.id}>{label.name}</span>)}</div><SenderInfo mail={mail} onStar={onStar} onReply={onReply} /></div>;
 }
 
-function messageDocument(html: string, allowRemoteImages: boolean): string {
+function messageDocument(html: string, allowRemoteImages: boolean, readingFontSize: ReadingFontSize): string {
   const imageSources = allowRemoteImages ? "data: cid: http: https:" : "data: cid:";
-  const securityHead = `<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; img-src ${imageSources}; style-src 'unsafe-inline'; font-src data:; media-src data: cid:; frame-src 'none'; form-action 'none'; base-uri 'none'">`;
+  const zoom = { small: "90%", medium: "100%", large: "115%" }[readingFontSize];
+  const securityHead = `<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; img-src ${imageSources}; style-src 'unsafe-inline'; font-src data:; media-src data: cid:; frame-src 'none'; form-action 'none'; base-uri 'none'"><style>html{zoom:${zoom};}</style>`;
   if (/<head\b[^>]*>/i.test(html)) return html.replace(/<head\b[^>]*>/i, (head) => `${head}${securityHead}`);
   if (/<html\b[^>]*>/i.test(html)) return html.replace(/<html\b[^>]*>/i, (root) => `${root}<head><meta charset="utf-8">${securityHead}</head>`);
   return `<!doctype html><html><head><meta charset="utf-8">${securityHead}</head><body>${html}</body></html>`;
@@ -66,7 +67,7 @@ export function RealEmailContent({ mail }: { mail: MailDetail }) {
     const sender = mail.fromAddress?.trim().toLowerCase() ?? "";
     const policyAllows = settings.remoteImagePolicy === "always" || (settings.remoteImagePolicy === "trusted" && Boolean(sender) && settings.trustedRemoteImageSenders.includes(sender));
     const remoteImagesAllowed = policyAllows || manualRemoteImagesAllowed;
-    return <div className="real-email-card">{hasRemoteImages && !remoteImagesAllowed ? <div className="body-unavailable"><strong>已阻止远程图片</strong><p>远程图片可能用于跟踪邮件打开时间和网络地址。</p><div className="remote-image-actions"><button className="interactive" type="button" onClick={() => setManualRemoteImagesAllowed(true)}>显示这封邮件的图片</button>{sender ? <button className="interactive secondary" type="button" onClick={() => trustRemoteImageSender(sender)}>始终显示此发件人的图片</button> : null}</div></div> : null}<iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody, remoteImagesAllowed)} title="邮件正文" /></div>;
+    return <div className="real-email-card">{hasRemoteImages && !remoteImagesAllowed ? <div className="body-unavailable"><strong>已阻止远程图片</strong><p>远程图片可能用于跟踪邮件打开时间和网络地址。</p><div className="remote-image-actions"><button className="interactive" type="button" onClick={() => setManualRemoteImagesAllowed(true)}>显示这封邮件的图片</button>{sender ? <button className="interactive secondary" type="button" onClick={() => trustRemoteImageSender(sender)}>始终显示此发件人的图片</button> : null}</div></div> : null}<iframe className="message-frame" sandbox="allow-popups" srcDoc={messageDocument(mail.htmlBody, remoteImagesAllowed, settings.readingFontSize)} title="邮件正文" /></div>;
   }
   return <div className="real-email-card plain-message">{mail.textBody || mail.snippet || "这封邮件没有可显示的正文。"}</div>;
 }
