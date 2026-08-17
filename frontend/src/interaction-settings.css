@@ -15,7 +15,18 @@
 .setting-control input[type="checkbox"] { width: 18px; height: 18px; }
 .compact-section { margin-bottom: 12px; }
 .trusted-summary { display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-radius: 12px; color: #617069; background: #f5f6f2; font-size: 11px; }
-.trusted-summary svg { width: 16px; height: 16px; color: var(--accent); }
+.trusted-summary > svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--accent); }
+.trusted-summary > span { min-width: 0; flex: 1; }
+.trusted-summary button { display: inline-flex; min-height: 30px; align-items: center; gap: 5px; padding: 0 8px; border: 0; border-radius: 8px; color: #7a625d; background: #ebe9e4; font-size: 10px; cursor: pointer; }
+.trusted-summary button:hover { color: var(--danger); background: #f5e9e6; }
+.trusted-summary button svg { width: 13px; height: 13px; }
+.trusted-sender-list { display: grid; gap: 6px; max-height: 160px; margin-top: 8px; overflow-y: auto; }
+.trusted-sender-list > div { display: grid; grid-template-columns: minmax(0, 1fr) 30px; min-height: 36px; align-items: center; gap: 8px; padding: 0 5px 0 11px; border: 1px solid #eceee8; border-radius: 10px; background: #fbfbf8; }
+.trusted-sender-list span { overflow: hidden; color: #52605a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.trusted-sender-list button { display: grid; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; place-items: center; color: #8a918c; background: transparent; cursor: pointer; }
+.trusted-sender-list button:hover { color: var(--danger); background: #f6e9e6; }
+.trusted-sender-list button svg { width: 14px; height: 14px; }
+.settings-section .trusted-empty { margin-top: 9px; padding: 0 2px; color: #929992; font-size: 10px; }
 .settings-footer { position: sticky; bottom: -22px; display: flex; justify-content: space-between; gap: 10px; margin: 0 -22px -22px; padding: 14px 22px; border-top: 1px solid #e5e6e0; background: rgba(255,254,251,.96); backdrop-filter: blur(12px); }
 .settings-footer button { display: flex; height: 38px; align-items: center; gap: 7px; padding: 0 14px; border: 0; border-radius: 10px; color: var(--accent); background: transparent; cursor: pointer; }
 .settings-footer button svg { width: 15px; height: 15px; }
@@ -33,6 +44,7 @@ html[data-reading-font-size="small"] .plain-message { font-size: 12px; }
 html[data-reading-font-size="large"] .plain-message { font-size: 15px; }
 
 html[data-reader-position="bottom"] .content-grid { grid-template-columns: 236px minmax(0, 1fr); grid-template-rows: minmax(280px, .9fr) minmax(300px, 1.1fr); }
+html[data-reader-position="bottom"] .app-shell.sidebar-collapsed .content-grid { grid-template-columns: 68px minmax(0, 1fr); }
 html[data-reader-position="bottom"] .sidebar { grid-row: 1 / span 2; }
 html[data-reader-position="bottom"] .mail-list-panel { grid-column: 2; grid-row: 1; }
 html[data-reader-position="bottom"] .mail-reader-panel { grid-column: 2; grid-row: 2; }
@@ -44,6 +56,10 @@ html[data-reader-position="bottom"] .mail-reader-header, html[data-reader-positi
 .mail-context-menu button.danger { color: var(--danger); }
 .mail-context-menu button svg { width: 16px; height: 16px; }
 .mail-context-menu .context-separator { height: 1px; margin: 5px 4px; background: #eceee8; }
+.account-context-head { min-width: 0; padding: 7px 10px 8px; border-bottom: 1px solid #eceee8; margin-bottom: 4px; }
+.account-context-head strong, .account-context-head span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-context-head strong { color: #344139; font-size: 11px; }
+.account-context-head span { margin-top: 2px; color: #8a918c; font-size: 9px; }
 
 .remote-image-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 10px; }
 .remote-image-actions button { min-height: 34px; padding: 0 12px; border: 0; border-radius: 10px; color: var(--accent); background: var(--accent-soft); cursor: pointer; }
