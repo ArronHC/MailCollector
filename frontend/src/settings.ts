@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-export type ReaderPosition = "right" | "bottom" | "hidden";
+export type ReaderPosition = "right" | "bottom";
 export type MailListDensity = "compact" | "comfortable" | "spacious";
 export type RemoteImagePolicy = "block" | "trusted" | "always";
 export type ReadingFontSize = "small" | "medium" | "large";
@@ -33,14 +33,12 @@ export const defaultAppSettings: AppSettings = {
   markReadOnOpen: true
 };
 
-const readerPositions = new Set<ReaderPosition>(["right", "bottom", "hidden"]);
+const readerPositions = new Set<ReaderPosition>(["right", "bottom"]);
 const densities = new Set<MailListDensity>(["compact", "comfortable", "spacious"]);
 const remoteImagePolicies = new Set<RemoteImagePolicy>(["block", "trusted", "always"]);
 const fontSizes = new Set<ReadingFontSize>(["small", "medium", "large"]);
 
-function normalizeSender(value: string): string {
-  return value.trim().toLowerCase();
-}
+function normalizeSender(value: string): string { return value.trim().toLowerCase(); }
 
 function normalizeSettings(value: unknown): AppSettings {
   if (!value || typeof value !== "object") return { ...defaultAppSettings };
@@ -64,12 +62,8 @@ function normalizeSettings(value: unknown): AppSettings {
 
 function loadSettings(): AppSettings {
   if (typeof window === "undefined") return { ...defaultAppSettings };
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    return stored ? normalizeSettings(JSON.parse(stored)) : { ...defaultAppSettings };
-  } catch {
-    return { ...defaultAppSettings };
-  }
+  try { const stored = window.localStorage.getItem(STORAGE_KEY); return stored ? normalizeSettings(JSON.parse(stored)) : { ...defaultAppSettings }; }
+  catch { return { ...defaultAppSettings }; }
 }
 
 let currentSettings = loadSettings();
@@ -85,37 +79,19 @@ function applyToDocument(settings: AppSettings): void {
   root.dataset.readingFontSize = settings.readingFontSize;
 }
 
-function emit(): void {
-  applyToDocument(currentSettings);
-  for (const listener of listeners) listener();
-}
-
-export function getAppSettings(): AppSettings {
-  return currentSettings;
-}
+function emit(): void { applyToDocument(currentSettings); for (const listener of listeners) listener(); }
+export function getAppSettings(): AppSettings { return currentSettings; }
 
 export function updateAppSettings(patch: Partial<Omit<AppSettings, "version">>): AppSettings {
   currentSettings = normalizeSettings({ ...currentSettings, ...patch, version: 1 });
-  if (typeof window !== "undefined") {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSettings));
-    } catch {
-      // Keep settings functional for the current session when persistence is unavailable.
-    }
-  }
+  if (typeof window !== "undefined") { try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSettings)); } catch {} }
   emit();
   return currentSettings;
 }
 
 export function resetAppSettings(): AppSettings {
   currentSettings = { ...defaultAppSettings, trustedRemoteImageSenders: [] };
-  if (typeof window !== "undefined") {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSettings));
-    } catch {
-      // Keep the reset effective for the current session when persistence is unavailable.
-    }
-  }
+  if (typeof window !== "undefined") { try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSettings)); } catch {} }
   emit();
   return currentSettings;
 }
@@ -123,9 +99,7 @@ export function resetAppSettings(): AppSettings {
 export function trustRemoteImageSender(address: string): void {
   const sender = normalizeSender(address);
   if (!sender) return;
-  const trusted = currentSettings.trustedRemoteImageSenders.includes(sender)
-    ? currentSettings.trustedRemoteImageSenders
-    : [...currentSettings.trustedRemoteImageSenders, sender];
+  const trusted = currentSettings.trustedRemoteImageSenders.includes(sender) ? currentSettings.trustedRemoteImageSenders : [...currentSettings.trustedRemoteImageSenders, sender];
   updateAppSettings({ trustedRemoteImageSenders: trusted, remoteImagePolicy: currentSettings.remoteImagePolicy === "block" ? "trusted" : currentSettings.remoteImagePolicy });
 }
 
@@ -134,25 +108,16 @@ export function untrustRemoteImageSender(address: string): void {
   updateAppSettings({ trustedRemoteImageSenders: currentSettings.trustedRemoteImageSenders.filter((item) => item !== sender) });
 }
 
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-
-export function useAppSettings(): AppSettings {
-  return useSyncExternalStore(subscribe, getAppSettings, getAppSettings);
-}
+function subscribe(listener: () => void): () => void { listeners.add(listener); return () => listeners.delete(listener); }
+export function useAppSettings(): AppSettings { return useSyncExternalStore(subscribe, getAppSettings, getAppSettings); }
 
 export function initializeAppSettings(): void {
   applyToDocument(currentSettings);
   if (typeof window === "undefined") return;
   window.addEventListener("storage", (event) => {
     if (event.key !== STORAGE_KEY) return;
-    try {
-      currentSettings = event.newValue ? normalizeSettings(JSON.parse(event.newValue)) : { ...defaultAppSettings };
-    } catch {
-      currentSettings = { ...defaultAppSettings };
-    }
+    try { currentSettings = event.newValue ? normalizeSettings(JSON.parse(event.newValue)) : { ...defaultAppSettings }; }
+    catch { currentSettings = { ...defaultAppSettings }; }
     emit();
   });
 }
