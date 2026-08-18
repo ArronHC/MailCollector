@@ -65,14 +65,16 @@ export function UpdateNotice() {
     return () => window.removeEventListener("focus", focus);
   }, [check]);
 
-  if (!updateAvailable || !latestVersion || dismissed === latestVersion) return null;
+  const visibleRelease = release;
+  const visibleVersion = latestVersion;
+  if (!updateAvailable || !visibleRelease || !visibleVersion || dismissed === visibleVersion) return null;
 
   async function install() {
     if (!installable) return;
     setInstalling(true);
     setError("");
     try {
-      await invoke("install_update", { version: latestVersion });
+      await invoke("install_update", { version: visibleVersion });
     } catch (failure) {
       setInstalling(false);
       setError(failure instanceof Error ? failure.message : "更新安装失败");
@@ -80,17 +82,17 @@ export function UpdateNotice() {
   }
 
   function dismiss() {
-    sessionStorage.setItem(dismissedKey, latestVersion);
-    setDismissed(latestVersion);
+    sessionStorage.setItem(dismissedKey, visibleVersion);
+    setDismissed(visibleVersion);
   }
 
   return <aside className="update-notice" aria-live="polite">
     <button className="update-dismiss" type="button" aria-label="稍后提醒" onClick={dismiss}><X /></button>
-    <div className="update-heading"><span>新版本可用</span><strong>v{latestVersion}</strong></div>
-    <p className="update-version">当前 v{currentVersion} · {release.name || `Mail Collector v${latestVersion}`}</p>
-    <p className="update-summary">{releaseSummary(release)}</p>
+    <div className="update-heading"><span>新版本可用</span><strong>v{visibleVersion}</strong></div>
+    <p className="update-version">当前 v{currentVersion} · {visibleRelease.name || `Mail Collector v${visibleVersion}`}</p>
+    <p className="update-summary">{releaseSummary(visibleRelease)}</p>
     {desktop
-      ? <p className="update-mode">{installable ? "可直接在应用内下载，校验 SHA-256 后启动安装。" : "此版本暂缺可验证的 Windows 安装资产，请稍后重新检查。"}</p>
+      ? <p className="update-mode">{installable ? "可直接在应用内下载，校验 SHA-256 后静默更新并重新打开。" : "此版本暂缺可验证的 Windows 安装资产，请稍后重新检查。"}</p>
       : <p className="update-mode">当前是浏览器 / 容器客户端。请由部署管理员更新服务镜像，完成后刷新页面即可。</p>}
     {error ? <p className="update-error">{error}</p> : null}
     <div className="update-actions">
