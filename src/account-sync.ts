@@ -556,22 +556,7 @@ export class AccountSyncManager {
     this.syncing = true;
     const result: AccountSyncResult = { pulled: 0, pushed: 0, deleted: 0, conflicts: 0, cursor: config.lastCursor };
     try {
-      let cursor = config.lastCursor;
-      while (true) {
-        const page = await this.relayRequest<{ changes: AccountSyncRelayChange[]; cursor: number; hasMore: boolean }>(
-          config,
-          `/api/account-sync/v1/changes?after=${cursor}`
-        );
-        for (const change of page.changes) {
-          const applied = this.applyRemoteChange(change, config.syncKey);
-          result.pulled += 1;
-          result.deleted += applied.deleted;
-          result.conflicts += applied.conflict ? 1 : 0;
-          cursor = Math.max(cursor, change.revision);
-        }
-        cursor = Math.max(cursor, page.cursor);
-        if (!page.hasMore) break;
-      }
+      let cursor = await this.pullRemoteChanges(config, config.lastCursor, result);
       result.cursor = cursor;
 
       const accounts = new Map(this.repository.listAccounts().map((account) => [account.syncId, account]));
@@ -588,13 +573,11 @@ export class AccountSyncManager {
           this.options.onAccountDeleted?.(removed.id);
           result.deleted += removed.deleted ? 1 : 0;
           result.conflicts += 1;
-          result.cursor = Math.max(result.cursor, pushed.revision);
           continue;
         }
         if (pushed.conflict) result.conflicts += 1;
         this.repository.saveState(payload.syncId, pushed.revision, hash, false);
         result.pushed += 1;
-        result.cursor = Math.max(result.cursor, pushed.revision);
       }
 
       const currentIds = new Set(accounts.keys());
@@ -606,10 +589,11 @@ export class AccountSyncManager {
         result.pushed += 1;
         result.deleted += 1;
         result.conflicts += pushed.conflict ? 1 : 0;
-        result.cursor = Math.max(result.cursor, pushed.revision);
       }
 
-      this.configStore.write({ ...config, lastCursor: result.cursor, lastSyncAt: new Date().toISOString(), lastError: null });
+      cursor = await this.pullRemoteChanges(config, cursor, result);
+      result.cursor = cursor;
+      this.configStore.write({ ...config, lastCursor: cursor, lastSyncAt: new Date().toISOString(), lastError: null });
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -617,6 +601,27 @@ export class AccountSyncManager {
       throw error;
     } finally {
       this.syncing = false;
+    }
+  }
+
+  private async pullRemoteChanges(config: StoredSyncConfig, startCursor: number, result: AccountSyncResult): Promise<number> {
+    let cursor = startCursor;
+    while (true) {
+      const page = await this.relayRequest<{ changes: AccountSyncRelayChange[]; cursor: number; hasMore: boolean }>(
+        config,
+        `/api/account-sync/v1/changes?after=${cursor}`
+      );
+      for (const change of page.changes) {
+        const applied = this.applyRemoteChange(change, config.syncKey);
+        result.pulled += 1;
+        result.deleted += applied.deleted;
+        result.conflicts += applied.conflict ? 1 : 0;
+        cursor = Math.max(cursor, change.revision);
+        result.cursor = cursor;
+      }
+      cursor = Math.max(cursor, page.cursor);
+      result.cursor = cursor;
+      if (!page.hasMore) return cursor;
     }
   }
 
