@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-install-update"
+description = "Allows the Mail Collector desktop webview to download a verified Mail Collector release and launch its installer."
+commands.allow = ["install_update"]
