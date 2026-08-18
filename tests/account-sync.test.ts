@@ -49,7 +49,8 @@ async function readJsonBody(request: http.IncomingMessage): Promise<Record<strin
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
 }
 
-function relayHttpServer(repository: AccountSyncRepository, token: string): http.Server {
+function relayHttpServer(repository: AccountSyncRepository, token: string, beforeFirstPut?: () => void): http.Server {
+  let firstPutSeen = false;
   return http.createServer(async (request, response) => {
     response.setHeader("Content-Type", "application/json");
     if (request.headers.authorization !== `Bearer ${token}`) {
@@ -64,6 +65,10 @@ function relayHttpServer(repository: AccountSyncRepository, token: string): http
     }
     const match = request.method === "PUT" ? url.pathname.match(/^\/api\/account-sync\/v1\/records\/([0-9a-f-]+)$/i) : null;
     if (match?.[1]) {
+      if (!firstPutSeen) {
+        firstPutSeen = true;
+        beforeFirstPut?.();
+      }
       const input = await readJsonBody(request);
       response.end(JSON.stringify(repository.relayPut(
         match[1],
@@ -121,6 +126,73 @@ test("relay uses optimistic revisions and keeps tombstones", () => {
     assert.deepEqual(page.changes.map((item) => [item.revision, item.deleted]), [[1, false], [2, true]]);
   } finally {
     repository.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a remote revision inserted between pull and push is not skipped", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mail-collector-account-sync-race-"));
+  const relayRepository = new AccountSyncRepository(path.join(directory, "relay.db"));
+  const relayToken = "relay-token-for-tests-0123456789";
+  const recoveryKey = generateAccountSyncKey();
+  const remoteSyncId = crypto.randomUUID();
+  const remotePayload: AccountSyncPayload = {
+    version: 1,
+    syncId: remoteSyncId,
+    updatedAt: new Date().toISOString(),
+    name: "Remote IMAP",
+    email: "remote@example.com",
+    host: "imap.remote.example",
+    port: 993,
+    secure: true,
+    username: "remote@example.com",
+    mailbox: "INBOX",
+    provider: "imap",
+    enabled: true,
+    auth: { type: "password", secret: "remote-app-password" }
+  };
+  const server = relayHttpServer(relayRepository, relayToken, () => {
+    const inserted = relayRepository.relayPut(remoteSyncId, 0, encryptAccountSyncPayload(remotePayload, recoveryKey), false);
+    assert.equal(inserted.ok, true);
+  });
+  const localKey = crypto.randomBytes(32);
+  const databasePath = path.join(directory, "device.db");
+  const database = new MailDatabase(databasePath);
+  const manager = new AccountSyncManager({ databasePath, encryptionKey: localKey, googleClientId: "", microsoftClientId: "" });
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const relayUrl = `http://127.0.0.1:${address.port}`;
+    const localSyncId = crypto.randomUUID();
+    database.createAccount({
+      syncId: localSyncId,
+      syncUpdatedAt: new Date().toISOString(),
+      name: "Local IMAP",
+      email: "local@example.com",
+      host: "imap.local.example",
+      port: 993,
+      secure: true,
+      username: "local@example.com",
+      encryptedPassword: encryptSecret("local-app-password", localKey),
+      mailbox: "INBOX",
+      provider: "imap",
+      enabled: true
+    });
+    manager.configure({ enabled: true, relayUrl, relayToken, syncKey: recoveryKey });
+
+    const result = await manager.syncNow();
+    assert.equal(result.pushed, 1);
+    assert.equal(result.cursor, 2);
+    const accounts = database.listAccounts();
+    assert.equal(accounts.some((account) => account.syncId === localSyncId), true);
+    assert.equal(accounts.some((account) => account.syncId === remoteSyncId), true);
+  } finally {
+    manager.close();
+    database.close();
+    relayRepository.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
