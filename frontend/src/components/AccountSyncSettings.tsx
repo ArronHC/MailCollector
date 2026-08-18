@@ -17,6 +17,7 @@ export function AccountSyncSettings() {
   const [busy, setBusy] = useState<"load" | "save" | "key" | "sync" | null>("load");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const namespaceLocked = Boolean(status && status.lastCursor > 0);
 
   const applyStatus = (next: AccountSyncStatus) => {
     setStatus(next);
@@ -45,11 +46,11 @@ export function AccountSyncSettings() {
     setError("");
     setNotice("");
     try {
-      const body: { enabled: boolean; relayUrl?: string; relayToken?: string; syncKey?: string } = {
-        enabled,
-        relayUrl: relayUrl.trim(),
-        syncKey: syncKey.trim()
-      };
+      const body: { enabled: boolean; relayUrl?: string; relayToken?: string; syncKey?: string } = { enabled };
+      if (!namespaceLocked) {
+        body.relayUrl = relayUrl.trim();
+        body.syncKey = syncKey.trim();
+      }
       if (relayToken.trim()) body.relayToken = relayToken.trim();
       const next = await api.configureAccountSync(body);
       applyStatus(next);
@@ -70,7 +71,7 @@ export function AccountSyncSettings() {
       const result = await api.ensureAccountSyncRecoveryKey();
       applyStatus(result.status);
       setSyncKey(result.recoveryKey);
-      setNotice("同步密钥已生成。请把它安全地复制到其他设备，不要发送给同步服务器。 ");
+      setNotice("同步密钥已生成。请把它安全地复制到其他设备，不要发送给同步服务器。");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -112,13 +113,13 @@ export function AccountSyncSettings() {
       <div className="setting-row"><div><strong>启用账户同步</strong><span>关闭后不会访问 relay，也不会影响本机已有邮箱。</span></div><div className="setting-control"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} /></div></div>
 
       <div className="account-sync-fields">
-        <label><span>同步服务器</span><input type="url" value={relayUrl} onChange={(event) => setRelayUrl(event.target.value)} placeholder="https://sync.example.com" autoComplete="off" /></label>
+        <label><span>同步服务器</span><input type="url" value={relayUrl} onChange={(event) => setRelayUrl(event.target.value)} placeholder="https://sync.example.com" autoComplete="off" disabled={namespaceLocked} title={namespaceLocked ? "已有同步历史，当前版本不支持直接切换 relay namespace" : undefined} /></label>
         <label><span>Relay Token</span><input type="password" value={relayToken} onChange={(event) => setRelayToken(event.target.value)} placeholder={status?.hasRelayToken ? "已保存，留空保持不变" : "粘贴 relay bearer token"} autoComplete="new-password" /></label>
-        <label className="account-sync-key-field"><span>同步密钥 / Recovery Key</span><div><input type="text" value={syncKey} onChange={(event) => setSyncKey(event.target.value)} placeholder="mcsk1_…" spellCheck={false} autoComplete="off" /><button type="button" onClick={() => void copyKey()} disabled={!syncKey} title="复制同步密钥"><Clipboard /></button></div></label>
+        <label className="account-sync-key-field"><span>同步密钥 / Recovery Key</span><div><input type="text" value={syncKey} onChange={(event) => setSyncKey(event.target.value)} placeholder="mcsk1_…" spellCheck={false} autoComplete="off" disabled={namespaceLocked} title={namespaceLocked ? "已有同步历史，当前版本不支持直接轮换 Recovery Key" : undefined} /><button type="button" onClick={() => void copyKey()} disabled={!syncKey} title="复制同步密钥"><Clipboard /></button></div></label>
       </div>
 
       <div className="account-sync-actions">
-        <button type="button" onClick={() => void ensureKey()} disabled={busy !== null}><KeyRound />{syncKey ? "显示/保留密钥" : "生成同步密钥"}</button>
+        <button type="button" onClick={() => void ensureKey()} disabled={busy !== null || namespaceLocked}><KeyRound />{syncKey ? "显示/保留密钥" : "生成同步密钥"}</button>
         <button type="button" onClick={() => void save()} disabled={busy !== null}><Save />{busy === "save" ? "保存中…" : "保存配置"}</button>
         <button type="button" className="primary-action" onClick={() => void syncNow()} disabled={busy !== null || !status?.configured || !status.enabled}><RefreshCw />{busy === "sync" ? "同步中…" : "立即同步"}</button>
       </div>
@@ -129,7 +130,7 @@ export function AccountSyncSettings() {
         <span>远端游标：{status?.lastCursor ?? 0}</span>
       </div>
 
-      <p className="account-sync-security">同步服务器只保存加密 blob、revision 与 tombstone。Recovery Key 不会上传；更换设备时需要把同一个 Recovery Key 安全地带到新设备。</p>
+      <p className="account-sync-security">同步服务器只保存加密 blob、revision 与 tombstone。Recovery Key 不会上传；更换设备时需要把同一个 Recovery Key 安全地带到新设备。{namespaceLocked ? " 已建立同步历史，当前版本锁定 relay URL 与 Recovery Key；Relay Token 仍可安全轮换。" : ""}</p>
       {status?.lastError ? <p className="account-sync-error">最近一次后台同步：{status.lastError}</p> : null}
       {notice ? <p className="account-sync-notice">{notice}</p> : null}
       {error ? <p className="account-sync-error">{error}</p> : null}
