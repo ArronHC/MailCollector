@@ -57,6 +57,7 @@ export const config = {
   googleOauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "",
   microsoftOauthClientId: process.env.MICROSOFT_OAUTH_CLIENT_ID?.trim() || "",
   oauthRedirectBaseUrl: process.env.OAUTH_REDIRECT_BASE_URL?.trim() || "",
+  accountSyncRelayToken: process.env.ACCOUNT_SYNC_RELAY_TOKEN?.trim() || "",
   syncIntervalMinutes: integer("SYNC_INTERVAL_MINUTES", 5),
   initialSyncLimit: integer("INITIAL_SYNC_LIMIT", 100),
   maxMessageBytes: integer("MAX_MESSAGE_BYTES", 10 * 1024 * 1024),

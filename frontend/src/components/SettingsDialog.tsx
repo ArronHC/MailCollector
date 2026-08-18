@@ -1,5 +1,6 @@
 import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Modal } from "./Ui";
+import { AccountSyncSettings } from "./AccountSyncSettings";
 import { resetAppSettings, untrustRemoteImageSender, updateAppSettings, useAppSettings } from "../settings";
 
 function SettingRow({ title, detail, children }: { title: string; detail: string; children: React.ReactNode }) {
@@ -29,6 +30,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         <header><Keyboard /><div><h3>操作</h3><p>为高频邮件整理保留键盘优先的工作流。</p></div></header>
         <SettingRow title="启用快捷键" detail="支持 J/K、E、S、U、R、C、/ 和 Esc。"><input type="checkbox" checked={settings.keyboardShortcutsEnabled} onChange={(event) => updateAppSettings({ keyboardShortcutsEnabled: event.target.checked })} /></SettingRow>
       </section>
+
+      <AccountSyncSettings />
 
       <section className="settings-section compact-section">
         <header><ShieldCheck /><div><h3>隐私</h3><p>远程图片仍通过现有 CSP 隔离策略加载，不会放开脚本、表单或网络请求。</p></div></header>

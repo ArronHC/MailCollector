@@ -93,11 +93,36 @@ export const auth = {
 export type OAuthMailProvider = "google" | "microsoft";
 export type OAuthFlowStatus = { status: "pending" | "authorized" | "success" | "error"; error: string; accountId: number | null };
 
+export type AccountSyncStatus = {
+  enabled: boolean;
+  relayUrl: string;
+  hasRelayToken: boolean;
+  hasSyncKey: boolean;
+  recoveryKey: string;
+  configured: boolean;
+  lastCursor: number;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  syncing: boolean;
+};
+
+export type AccountSyncResult = {
+  pulled: number;
+  pushed: number;
+  deleted: number;
+  conflicts: number;
+  cursor: number;
+};
+
 export const api = {
   accounts: () => request<{ accounts: MailAccount[] }>("/api/accounts"),
   providers: () => request<{ providers: MailProvider[] }>("/api/providers"),
   startOAuth: (provider: OAuthMailProvider) => request<{ flowId: string; authorizationUrl: string }>(`/api/oauth/${provider}/start`, { method: "POST" }),
   oauthFlow: (flowId: string) => request<OAuthFlowStatus>(`/api/oauth/flows/${encodeURIComponent(flowId)}`),
+  accountSyncStatus: () => request<AccountSyncStatus>("/api/account-sync/status"),
+  ensureAccountSyncRecoveryKey: () => request<{ recoveryKey: string; status: AccountSyncStatus }>("/api/account-sync/recovery-key", { method: "POST" }),
+  configureAccountSync: (body: { enabled: boolean; relayUrl?: string; relayToken?: string; syncKey?: string }) => request<AccountSyncStatus>("/api/account-sync/config", { method: "PUT", body: JSON.stringify(body) }),
+  syncAccounts: () => request<AccountSyncResult>("/api/account-sync/sync", { method: "POST" }),
   messages: (params: URLSearchParams) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`),
   message: (id: number) => request<{ message: MailDetail }>(`/api/messages/${id}`),
   updateMessage: (id: number, actions: MessageActions) => request<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify(actions) }),

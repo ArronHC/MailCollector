@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { z } from "zod";
+import { AccountSyncManager } from "./account-sync.js";
 import { createSessionToken, hashPassword, hashSessionToken, normalizeEmail, readCookie, verifyPassword } from "./auth.js";
 import { config } from "./config.js";
 import { encryptSecret } from "./crypto.js";
@@ -78,6 +79,17 @@ const registrationSchema = z.object({
   inviteCode: z.string().trim().min(1).max(200)
 });
 const loginSchema = z.object({ email: emailSchema, password: passwordSchema });
+const accountSyncConfigSchema = z.object({
+  enabled: z.boolean(),
+  relayUrl: z.string().trim().max(2048).optional(),
+  relayToken: z.string().max(1024).optional(),
+  syncKey: z.string().max(256).optional()
+});
+const accountSyncRelayPutSchema = z.object({
+  baseRevision: z.coerce.number().int().min(0),
+  ciphertext: z.string().max(64_000).nullable().optional(),
+  deleted: z.boolean()
+}).refine((value) => value.deleted || Boolean(value.ciphertext), "非删除记录必须包含加密内容");
 
 const database = new MailDatabase(config.databasePath);
 const oauthManager = new OAuthManager({
@@ -108,6 +120,18 @@ const idleService = config.imapIdleEnabled ? new ImapIdleService(database, syncS
   reconnectMaxMs: config.imapIdleReconnectMaxSeconds * 1000,
   startupConcurrency: config.providerMaxConcurrency
 }) : null;
+const accountSyncManager = new AccountSyncManager({
+  databasePath: config.databasePath,
+  encryptionKey: config.encryptionKey,
+  googleClientId: config.googleOauthClientId,
+  microsoftClientId: config.microsoftOauthClientId,
+  relayServerToken: config.accountSyncRelayToken,
+  onAccountChanged: (accountId, created) => {
+    database.enqueueJob(accountId, created ? "initial" : "incremental", created ? 1 : 2, created ? "account_sync_created" : "account_sync_updated", new Date(), 5, false, true);
+    idleService?.refresh();
+  },
+  onAccountDeleted: () => idleService?.refresh()
+});
 const smtpSender = new SmtpSender(config.encryptionKey, oauthManager);
 const app = express();
 const sessionCookieName = "mail_collector_session";
@@ -192,6 +216,11 @@ function oauthAccountPreset(provider: OAuthMailProvider) {
   return provider === "google"
     ? { name: "Gmail", host: "imap.gmail.com", port: 993, secure: true, provider: "gmail" as const }
     : { name: "Outlook", host: "outlook.office365.com", port: 993, secure: true, provider: "microsoft" as const };
+}
+
+function bearerToken(request: express.Request): string {
+  const authorization = request.header("authorization") ?? "";
+  return authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
 }
 
 app.use("/api/auth", (_request, response, next) => {
@@ -336,6 +365,33 @@ app.get("/", async (request, response, next) => {
   }
 });
 
+app.use("/api/account-sync/v1", (request, response, next) => {
+  if (!accountSyncManager.relayAvailable()) return response.status(404).json({ error: "账户同步 relay 未启用" });
+  if (!accountSyncManager.relayAuthorized(bearerToken(request))) return response.status(401).json({ error: "同步 relay 未授权" });
+  response.set("Cache-Control", "no-store");
+  next();
+});
+
+app.get("/api/account-sync/v1/changes", (request, response, next) => {
+  try {
+    const after = z.coerce.number().int().min(0).default(0).parse(request.query.after);
+    response.json(accountSyncManager.relayChanges(after));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/account-sync/v1/records/:syncId", (request, response, next) => {
+  try {
+    const syncId = z.string().uuid().parse(request.params.syncId);
+    const input = accountSyncRelayPutSchema.parse(request.body);
+    const result = accountSyncManager.relayPut(syncId, input.baseRevision, input.ciphertext ?? null, input.deleted);
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use("/api", (request, response, next) => {
   const token = readCookie(request.header("cookie"), sessionCookieName);
   if (token) {
@@ -365,6 +421,39 @@ app.get("/api/providers", (_request, response) => response.json({ providers: pro
   return { ...provider, oauthProvider, oauthAvailable: oauthProvider ? oauthManager.available(oauthProvider) : false };
 }) }));
 app.get("/api/accounts", (_request, response) => response.json({ accounts: database.listPublicAccounts(syncService.syncingIds) }));
+
+app.get("/api/account-sync/status", (_request, response, next) => {
+  try {
+    response.json(accountSyncManager.status());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/account-sync/recovery-key", (_request, response, next) => {
+  try {
+    const recoveryKey = accountSyncManager.ensureRecoveryKey();
+    response.json({ recoveryKey, status: accountSyncManager.status() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/account-sync/config", (request, response, next) => {
+  try {
+    response.json(accountSyncManager.configure(accountSyncConfigSchema.parse(request.body)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/account-sync/sync", async (_request, response, next) => {
+  try {
+    response.json(await accountSyncManager.syncNow());
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.post("/api/oauth/:provider/start", (request, response, next) => {
   try {
@@ -671,6 +760,7 @@ let schedulerTimer: NodeJS.Timeout | null = null;
 let workerTimer: NodeJS.Timeout | null = null;
 syncService.scheduleDueAccounts();
 idleService?.start();
+accountSyncManager.start();
 schedulerTimer = setInterval(() => syncService.scheduleDueAccounts(), config.syncIntervalMinutes * 60_000);
 schedulerTimer.unref();
 workerTimer = setInterval(() => void mailWorker.drain(), config.workerIntervalSeconds * 1000);
@@ -684,6 +774,7 @@ export function closeServer(): Promise<void> {
   closePromise = (async () => {
     if (schedulerTimer) clearInterval(schedulerTimer);
     if (workerTimer) clearInterval(workerTimer);
+    accountSyncManager.close();
     await idleService?.stop();
     syncService.stop();
     await mailWorker.stop();
