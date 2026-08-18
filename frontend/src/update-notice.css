@@ -1,0 +1,76 @@
+.update-notice {
+  position: fixed;
+  top: 76px;
+  right: 20px;
+  z-index: 120;
+  width: min(370px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 16px;
+  background: var(--panel, #fff);
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
+  color: var(--text, #17221e);
+}
+
+.update-dismiss {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.update-dismiss:hover { background: rgba(15, 23, 42, 0.06); }
+.update-dismiss svg { width: 16px; height: 16px; }
+
+.update-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding-right: 34px;
+}
+
+.update-heading span { font-size: 13px; font-weight: 700; color: #16745a; }
+.update-heading strong { font-size: 20px; }
+.update-version { margin: 5px 0 0; font-size: 12px; color: #68746f; }
+.update-summary { margin: 13px 0 0; font-size: 14px; line-height: 1.55; }
+.update-mode { margin: 8px 0 0; font-size: 12px; line-height: 1.5; color: #68746f; }
+.update-error { margin: 9px 0 0; font-size: 12px; color: #b42318; }
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.update-actions button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--line, #dfe5e2);
+  border-radius: 9px;
+  background: var(--panel, #fff);
+  color: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.update-actions button:hover:not(:disabled) { background: rgba(20, 116, 90, 0.06); }
+.update-actions button:disabled { opacity: 0.6; cursor: default; }
+.update-actions button svg { width: 15px; height: 15px; }
+.update-actions .update-primary { border-color: #16745a; background: #16745a; color: #fff; }
+.update-actions .update-primary:hover:not(:disabled) { background: #11644d; }
+
+@media (max-width: 700px) {
+  .update-notice { top: 64px; right: 12px; width: calc(100vw - 24px); }
+}
