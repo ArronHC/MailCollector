@@ -26,9 +26,10 @@ $microsoftReady = Require-Value "MICROSOFT_OAUTH_CLIENT_ID" $env:MICROSOFT_OAUTH
 if ($googleReady) { Looks-Like-ClientId "GOOGLE_OAUTH_CLIENT_ID" $env:GOOGLE_OAUTH_CLIENT_ID }
 if ($microsoftReady) { Looks-Like-ClientId "MICROSOFT_OAUTH_CLIENT_ID" $env:MICROSOFT_OAUTH_CLIENT_ID }
 
-$mode = ($env:WINDOWS_SIGNING_MODE ?? "").Trim().ToLowerInvariant()
-if ($mode -notin @("azure", "pfx", "auto")) {
-    $errors.Add("WINDOWS_SIGNING_MODE must be azure, pfx, or auto")
+$mode = ($env:WINDOWS_SIGNING_MODE ?? "none").Trim().ToLowerInvariant()
+if ([string]::IsNullOrWhiteSpace($mode)) { $mode = "none" }
+if ($mode -notin @("none", "azure", "pfx", "auto")) {
+    $errors.Add("WINDOWS_SIGNING_MODE must be none, azure, pfx, or auto")
 }
 
 $azureValues = @{
@@ -58,12 +59,24 @@ if ($mode -eq "azure" -and -not $azureReady) {
     }
 } elseif ($mode -eq "auto" -and -not ($azureReady -or $pfxReady)) {
     $errors.Add("WINDOWS_SIGNING_MODE=auto requires a complete Azure Artifact Signing or PFX configuration")
+} elseif ($mode -eq "none") {
+    $warnings.Add("Windows Authenticode signing is disabled; Windows/SmartScreen may warn users about an unknown or unrecognized publisher")
+}
+
+$signingSummary = if ($mode -eq "none") {
+    "disabled (unsigned release allowed)"
+} elseif ($azureReady) {
+    "Azure ready"
+} elseif ($pfxReady) {
+    "PFX ready"
+} else {
+    "configured mode is incomplete"
 }
 
 Write-Host "Release readiness summary"
 Write-Host "  Google OAuth:    $(if ($googleReady) { 'configured' } else { 'missing' })"
 Write-Host "  Microsoft OAuth: $(if ($microsoftReady) { 'configured' } else { 'missing' })"
-Write-Host "  Windows signing: $(if ($azureReady) { 'Azure ready' } elseif ($pfxReady) { 'PFX ready' } else { 'not ready' })"
+Write-Host "  Windows signing: $signingSummary"
 
 foreach ($warning in $warnings) {
     Write-Warning $warning
