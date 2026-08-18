@@ -90,9 +90,14 @@ export const auth = {
   }
 };
 
+export type OAuthMailProvider = "google" | "microsoft";
+export type OAuthFlowStatus = { status: "pending" | "authorized" | "success" | "error"; error: string; accountId: number | null };
+
 export const api = {
   accounts: () => request<{ accounts: MailAccount[] }>("/api/accounts"),
   providers: () => request<{ providers: MailProvider[] }>("/api/providers"),
+  startOAuth: (provider: OAuthMailProvider) => request<{ flowId: string; authorizationUrl: string }>(`/api/oauth/${provider}/start`, { method: "POST" }),
+  oauthFlow: (flowId: string) => request<OAuthFlowStatus>(`/api/oauth/flows/${encodeURIComponent(flowId)}`),
   messages: (params: URLSearchParams) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`),
   message: (id: number) => request<{ message: MailDetail }>(`/api/messages/${id}`),
   updateMessage: (id: number, actions: MessageActions) => request<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify(actions) }),

@@ -2,9 +2,11 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { decryptSecret } from "./crypto.js";
 import { assertAllowedMailHost, createMailHostLookup } from "./network-security.js";
+import type { OAuthManager } from "./oauth.js";
 import type { BackfillResult, MailAccount, MailOperation, MailProvider, ParsedMessage, SyncResult } from "./types.js";
 
 type ImapItem = Awaited<ReturnType<ImapFlow["fetchOne"]>> & object;
+type ImapAuth = { user: string; pass?: string; accessToken?: string };
 
 function envelopeAddresses(addresses: Array<{ name?: string; address?: string }> | undefined): string | null {
   if (!addresses?.length) return null;
@@ -49,7 +51,11 @@ function remoteState(item: ImapItem): { uid: number; isRead: boolean; isStarred:
 }
 
 export class ImapMailProvider implements MailProvider {
-  constructor(private readonly encryptionKey: Buffer, private readonly allowPrivateMailHosts = false) {}
+  constructor(
+    private readonly encryptionKey: Buffer,
+    private readonly allowPrivateMailHosts = false,
+    private readonly oauthManager?: OAuthManager
+  ) {}
 
   async testConnection(account: MailAccount): Promise<void> {
     await this.withMailbox(account, true, 1024 * 1024, async () => undefined);
@@ -140,7 +146,8 @@ export class ImapMailProvider implements MailProvider {
 
   async watch(account: MailAccount, onEvent: (reason: "exists" | "expunge" | "flags") => void, signal: AbortSignal, onReady?: () => void): Promise<void> {
     await assertAllowedMailHost(account.host, this.allowPrivateMailHosts, true);
-    const client = this.client(account, 1024 * 1024, true);
+    const auth = await this.auth(account);
+    const client = this.client(account, 1024 * 1024, true, auth);
     let connectionError: Error | null = null;
     const abort = () => client.close();
     const onError = (error: Error) => { connectionError = error; };
@@ -218,7 +225,8 @@ export class ImapMailProvider implements MailProvider {
 
   private async withMailbox<T>(account: MailAccount, readOnly: boolean, maxMessageBytes: number, action: (client: ImapFlow) => Promise<T>, signal?: AbortSignal): Promise<T> {
     await assertAllowedMailHost(account.host, this.allowPrivateMailHosts, true);
-    const client = this.client(account, maxMessageBytes);
+    const auth = await this.auth(account);
+    const client = this.client(account, maxMessageBytes, false, auth);
     const abort = () => client.close();
     signal?.addEventListener("abort", abort, { once: true });
     try {
@@ -237,13 +245,21 @@ export class ImapMailProvider implements MailProvider {
     }
   }
 
-  private client(account: MailAccount, maxMessageBytes: number, idle = false): ImapFlow {
+  private async auth(account: MailAccount): Promise<ImapAuth> {
+    const oauthProvider = this.oauthManager?.providerForAccount(account);
+    if (oauthProvider) {
+      return { user: account.username, accessToken: await this.oauthManager!.accessToken(account) };
+    }
+    return { user: account.username, pass: decryptSecret(account.encryptedPassword, this.encryptionKey) };
+  }
+
+  private client(account: MailAccount, maxMessageBytes: number, idle: boolean, auth: ImapAuth): ImapFlow {
     return new ImapFlow({
       host: account.host,
       port: account.port,
       secure: account.secure,
       doSTARTTLS: account.secure ? undefined : true,
-      auth: { user: account.username, pass: decryptSecret(account.encryptedPassword, this.encryptionKey) },
+      auth,
       logger: false,
       qresync: idle,
       maxIdleTime: idle ? 25 * 60_000 : undefined,

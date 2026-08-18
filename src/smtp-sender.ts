@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { decryptSecret } from "./crypto.js";
+import type { OAuthManager } from "./oauth.js";
 import type { LocalMessageContent, MailAccount } from "./types.js";
 
 export type SmtpPreset = {
@@ -26,18 +27,19 @@ export function smtpPresetForImapHost(host: string): SmtpPreset {
 }
 
 export class SmtpSender {
-  constructor(private readonly encryptionKey: Buffer) {}
+  constructor(private readonly encryptionKey: Buffer, private readonly oauthManager?: OAuthManager) {}
 
   async send(account: MailAccount, message: LocalMessageContent): Promise<{ messageId: string | null; sentAt: string }> {
     const preset = smtpPresetForImapHost(account.host);
+    const oauthProvider = this.oauthManager?.providerForAccount(account);
+    const auth = oauthProvider
+      ? { type: "OAuth2" as const, user: account.username, accessToken: await this.oauthManager!.accessToken(account) }
+      : { user: account.username, pass: decryptSecret(account.encryptedPassword, this.encryptionKey) };
 
     const transport = nodemailer.createTransport({
       ...preset,
       requireTLS: !preset.secure,
-      auth: {
-        user: account.username,
-        pass: decryptSecret(account.encryptedPassword, this.encryptionKey)
-      },
+      auth,
       connectionTimeout: 15_000,
       greetingTimeout: 15_000,
       socketTimeout: 60_000

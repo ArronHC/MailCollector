@@ -88,6 +88,8 @@ export interface MailProvider {
   host: string;
   port: number;
   secure: boolean;
+  oauthProvider?: "google" | "microsoft" | null;
+  oauthAvailable?: boolean;
 }
 
 export const sourceNames: Record<MailSource, string> = {
