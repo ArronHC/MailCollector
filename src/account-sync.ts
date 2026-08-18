@@ -178,7 +178,7 @@ function normalizeRelayUrl(value: string): string {
   } catch {
     throw new Error("同步服务器 URL 无效");
   }
-  if (!['https:', 'http:'].includes(url.protocol)) throw new Error("同步服务器仅支持 HTTP 或 HTTPS");
+  if (!["https:", "http:"].includes(url.protocol)) throw new Error("同步服务器仅支持 HTTP 或 HTTPS");
   if (url.username || url.password || url.search || url.hash) throw new Error("同步服务器 URL 不能包含凭据、查询参数或片段");
   const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname.toLowerCase());
   if (url.protocol !== "https:" && !loopback) throw new Error("远程同步服务器必须使用 HTTPS");
@@ -496,15 +496,23 @@ export class AccountSyncManager {
     if (relayToken && relayToken.length < 24) throw new Error("同步服务器令牌至少需要 24 个字符");
     if (syncKey) parseSyncKey(syncKey);
     if (input.enabled && (!relayUrl || !relayToken || !syncKey)) throw new Error("启用账户同步前需要配置服务器、令牌和同步密钥");
-    const endpointChanged = relayUrl !== current.relayUrl || relayToken !== current.relayToken || syncKey !== current.syncKey;
+    const relayChanged = relayUrl !== current.relayUrl;
+    const syncKeyChanged = syncKey !== current.syncKey;
+    if (current.lastCursor > 0 && relayChanged) {
+      throw Object.assign(new Error("已有账户同步历史，当前版本不支持直接切换同步服务器 namespace"), { status: 409 });
+    }
+    if (current.lastCursor > 0 && syncKeyChanged) {
+      throw Object.assign(new Error("已有账户同步历史，当前版本不支持直接轮换 Recovery Key"), { status: 409 });
+    }
+    const namespaceChanged = relayChanged || syncKeyChanged;
     this.configStore.write({
       ...current,
       enabled: input.enabled,
       relayUrl,
       relayToken,
       syncKey,
-      lastCursor: endpointChanged ? 0 : current.lastCursor,
-      lastSyncAt: endpointChanged ? null : current.lastSyncAt,
+      lastCursor: namespaceChanged ? 0 : current.lastCursor,
+      lastSyncAt: namespaceChanged ? null : current.lastSyncAt,
       lastError: null
     });
     return this.status();
