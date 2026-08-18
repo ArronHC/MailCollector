@@ -1,0 +1,27 @@
+.account-sync-section { margin-bottom: 22px; }
+.account-sync-muted { padding: 10px 0 2px; }
+.account-sync-fields { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid #f0f0eb; }
+.account-sync-fields label { display: grid; gap: 5px; }
+.account-sync-fields label > span { color: #59665f; font-size: 10px; font-weight: 600; }
+.account-sync-fields input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid #d1d4cc; border-radius: 10px; color: #344139; background: #fbfbf8; outline: 0; box-sizing: border-box; }
+.account-sync-fields input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(23,107,87,.08); }
+.account-sync-key-field > div { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 7px; }
+.account-sync-key-field button { display: grid; width: 38px; height: 38px; padding: 0; border: 1px solid #d8dbd3; border-radius: 10px; place-items: center; color: var(--accent); background: #fff; cursor: pointer; }
+.account-sync-key-field button:disabled { opacity: .45; cursor: default; }
+.account-sync-key-field button svg { width: 15px; height: 15px; }
+.account-sync-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.account-sync-actions button { display: inline-flex; min-height: 36px; align-items: center; gap: 6px; padding: 0 11px; border: 1px solid #d8dbd3; border-radius: 10px; color: #55635c; background: #fff; cursor: pointer; }
+.account-sync-actions button.primary-action { border-color: var(--accent); color: #fff; background: var(--accent); }
+.account-sync-actions button:disabled { opacity: .45; cursor: default; }
+.account-sync-actions button svg { width: 14px; height: 14px; }
+.account-sync-state { display: flex; flex-wrap: wrap; gap: 7px 14px; margin-top: 12px; padding: 10px 11px; border-radius: 11px; color: #66736c; background: #f5f6f2; font-size: 10px; }
+.account-sync-state span { display: inline-flex; align-items: center; gap: 5px; }
+.account-sync-state svg { width: 12px; height: 12px; color: var(--accent); }
+.settings-section .account-sync-security { margin-top: 10px; color: #7d8781; font-size: 10px; }
+.settings-section .account-sync-notice { margin-top: 8px; padding: 8px 10px; border-radius: 9px; color: #315f50; background: #edf6f2; font-size: 10px; }
+.settings-section .account-sync-error { margin-top: 8px; padding: 8px 10px; border-radius: 9px; color: #9a4438; background: #fbefec; font-size: 10px; }
+
+@media (max-width: 760px) {
+  .account-sync-actions { display: grid; grid-template-columns: 1fr; }
+  .account-sync-actions button { justify-content: center; }
+}
