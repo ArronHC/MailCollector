@@ -77,7 +77,11 @@ fn oauth_client_id(current: String, env_name: &str, embedded: Option<&str>) -> S
     std::env::var(env_name)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| embedded.map(str::to_string).filter(|value| !value.trim().is_empty()))
+        .or_else(|| {
+            embedded
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty())
+        })
         .unwrap_or_default()
 }
 
