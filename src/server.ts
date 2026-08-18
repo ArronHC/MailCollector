@@ -10,6 +10,7 @@ import { MailDatabase } from "./database.js";
 import { ImapMailSyncer } from "./imap-syncer.js";
 import { ImapIdleService } from "./imap-idle-service.js";
 import { MailWorker } from "./mail-worker.js";
+import { OAuthManager, type OAuthMailProvider } from "./oauth.js";
 import { providers } from "./providers.js";
 import { SmtpSender } from "./smtp-sender.js";
 import { SyncService } from "./sync-service.js";
@@ -79,7 +80,15 @@ const registrationSchema = z.object({
 const loginSchema = z.object({ email: emailSchema, password: passwordSchema });
 
 const database = new MailDatabase(config.databasePath);
-const syncer = new ImapMailSyncer(config.encryptionKey, config.allowPrivateMailHosts);
+const oauthManager = new OAuthManager({
+  encryptionKey: config.encryptionKey,
+  databasePath: config.databasePath,
+  port: config.port,
+  googleClientId: config.googleOauthClientId,
+  microsoftClientId: config.microsoftOauthClientId,
+  redirectBaseUrl: config.oauthRedirectBaseUrl || undefined
+});
+const syncer = new ImapMailSyncer(config.encryptionKey, config.allowPrivateMailHosts, oauthManager);
 const syncService = new SyncService(database, syncer, config.initialSyncLimit, config.maxMessageBytes, {
   backfillPageSize: config.backfillPageSize,
   reconcileLimit: config.reconcileMessageLimit,
@@ -99,7 +108,7 @@ const idleService = config.imapIdleEnabled ? new ImapIdleService(database, syncS
   reconnectMaxMs: config.imapIdleReconnectMaxSeconds * 1000,
   startupConcurrency: config.providerMaxConcurrency
 }) : null;
-const smtpSender = new SmtpSender(config.encryptionKey);
+const smtpSender = new SmtpSender(config.encryptionKey, oauthManager);
 const app = express();
 const sessionCookieName = "mail_collector_session";
 const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
@@ -171,6 +180,20 @@ function clearAppSession(request: express.Request, response: express.Response): 
   response.clearCookie(sessionCookieName, { httpOnly: true, sameSite: "strict", secure: request.secure, path: "/api" });
 }
 
+function queryText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[character] ?? character));
+}
+
+function oauthAccountPreset(provider: OAuthMailProvider) {
+  return provider === "google"
+    ? { name: "Gmail", host: "imap.gmail.com", port: 993, secure: true, provider: "gmail" as const }
+    : { name: "Outlook", host: "outlook.office365.com", port: 993, secure: true, provider: "microsoft" as const };
+}
+
 app.use("/api/auth", (_request, response, next) => {
   response.set("Cache-Control", "no-store");
   next();
@@ -234,6 +257,85 @@ app.post("/api/desktop/shutdown", (request, response) => {
   setImmediate(() => void closeServer());
 });
 
+app.get("/", async (request, response, next) => {
+  const state = queryText(request.query.state);
+  const code = queryText(request.query.code);
+  const providerError = queryText(request.query.error);
+  const providerErrorDescription = queryText(request.query.error_description);
+  if (!state || (!code && !providerError)) {
+    next();
+    return;
+  }
+
+  let flowId = "";
+  let syncId = "";
+  try {
+    const completed = await oauthManager.completeCallback(state, code, providerError, providerErrorDescription);
+    flowId = completed.flowId;
+    const credential = completed.credential;
+    if (database.listAccounts().some((account) => account.email.toLowerCase() === credential.email.toLowerCase())) {
+      throw Object.assign(new Error("该邮箱已经添加"), { status: 409 });
+    }
+    const preset = oauthAccountPreset(credential.provider);
+    syncId = crypto.randomUUID();
+    const syncUpdatedAt = new Date().toISOString();
+    oauthManager.saveCredential(syncId, credential);
+    const candidate = {
+      id: 0,
+      syncId,
+      syncUpdatedAt,
+      name: preset.name,
+      email: credential.email,
+      host: preset.host,
+      port: preset.port,
+      secure: preset.secure,
+      username: credential.email,
+      encryptedPassword: oauthManager.marker(credential.provider),
+      mailbox: "INBOX",
+      provider: preset.provider,
+      enabled: true,
+      uidValidity: null,
+      lastUid: 0,
+      lastSyncAt: null,
+      lastSuccessfulSyncAt: null,
+      lastReconcileAt: null,
+      lastEventAt: null,
+      lastError: null,
+      syncErrorCount: 0,
+      syncState: "idle" as const,
+      nextSyncAt: null,
+      backfillCursor: null,
+      backfillStatus: "pending" as const,
+      createdAt: syncUpdatedAt
+    };
+    await syncer.testConnection(candidate);
+    const account = database.createAccount({
+      syncId: candidate.syncId,
+      syncUpdatedAt: candidate.syncUpdatedAt,
+      name: candidate.name,
+      email: candidate.email,
+      host: candidate.host,
+      port: candidate.port,
+      secure: candidate.secure,
+      username: candidate.username,
+      encryptedPassword: candidate.encryptedPassword,
+      mailbox: candidate.mailbox,
+      provider: candidate.provider,
+      enabled: candidate.enabled
+    });
+    database.enqueueJob(account.id, "initial", 1, "oauth_account_created");
+    idleService?.refresh();
+    oauthManager.markFlowSuccess(flowId, account.id);
+    response.type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Mail Collector</title><style>body{font-family:system-ui;margin:48px;line-height:1.6;color:#1f2937}main{max-width:560px;margin:auto}h1{font-size:24px}</style><main><h1>邮箱已连接</h1><p>授权完成，可以关闭这个浏览器页面并返回 Mail Collector。</p></main>");
+  } catch (error) {
+    if (syncId) oauthManager.deleteCredential(syncId);
+    const message = error instanceof Error ? error.message : "OAuth 授权失败";
+    if (flowId) oauthManager.markFlowError(flowId, message);
+    const status = Number((error as { status?: number }).status ?? 400);
+    response.status(status >= 400 && status < 600 ? status : 400).type("html").send(`<!doctype html><meta charset="utf-8"><title>Mail Collector</title><style>body{font-family:system-ui;margin:48px;line-height:1.6;color:#1f2937}main{max-width:620px;margin:auto}h1{font-size:24px;color:#b42318}</style><main><h1>邮箱连接失败</h1><p>${escapeHtml(message)}</p><p>请关闭此页面并返回 Mail Collector 重试。</p></main>`);
+  }
+});
+
 app.use("/api", (request, response, next) => {
   const token = readCookie(request.header("cookie"), sessionCookieName);
   if (token) {
@@ -258,8 +360,29 @@ app.get("/api/auth/session", (_request, response) => {
 });
 app.get("/api/health", (_request, response) => response.json({ ok: true, service: "mail-collector", version: config.serviceVersion }));
 
-app.get("/api/providers", (_request, response) => response.json({ providers }));
+app.get("/api/providers", (_request, response) => response.json({ providers: providers.map((provider) => {
+  const oauthProvider: OAuthMailProvider | null = provider.id === "gmail" ? "google" : provider.id === "outlook" ? "microsoft" : null;
+  return { ...provider, oauthProvider, oauthAvailable: oauthProvider ? oauthManager.available(oauthProvider) : false };
+}) }));
 app.get("/api/accounts", (_request, response) => response.json({ accounts: database.listPublicAccounts(syncService.syncingIds) }));
+
+app.post("/api/oauth/:provider/start", (request, response, next) => {
+  try {
+    const provider = z.enum(["google", "microsoft"]).parse(request.params.provider);
+    response.json(oauthManager.start(provider));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/oauth/flows/:flowId", (request, response, next) => {
+  try {
+    const flowId = z.string().uuid().parse(request.params.flowId);
+    response.json(oauthManager.flowStatus(flowId));
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.post("/api/accounts", async (request, response, next) => {
   try {
@@ -335,7 +458,9 @@ app.delete("/api/accounts/:id", (request, response, next) => {
   try {
     const id = z.coerce.number().int().positive().parse(request.params.id);
     if (syncService.syncingIds.has(id)) return response.status(409).json({ error: "邮箱正在同步，请稍后删除" });
-    if (!database.deleteAccount(id)) return response.status(404).json({ error: "邮箱不存在" });
+    const account = database.getAccount(id);
+    if (!account || !database.deleteAccount(id)) return response.status(404).json({ error: "邮箱不存在" });
+    oauthManager.deleteCredential(account.syncId);
     idleService?.refresh();
     response.status(204).end();
   } catch (error) {
@@ -529,7 +654,9 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
   }
   const message = error instanceof Error ? error.message : "服务器错误";
   console.error(error);
-  const status = message.includes("不存在") ? 404
+  const explicitStatus = Number((error as { status?: number }).status ?? 0);
+  const status = explicitStatus >= 400 && explicitStatus < 600 ? explicitStatus
+    : message.includes("不存在") ? 404
     : message.includes("正在同步") || message.includes("已存在") || message.includes("已停用") ? 409
     : message.includes("不支持 IMAP 主机") || message.includes("不允许连接") || message.includes("没有可用地址") ? 400
     : 500;
