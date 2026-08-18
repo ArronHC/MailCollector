@@ -33,6 +33,9 @@ jobs:
       AZURE_ARTIFACT_SIGNING_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
     steps:
       - uses: actions/checkout@v4
+      - name: Verify release readiness
+        shell: pwsh
+        run: ./scripts/check-release-readiness.ps1
       - uses: actions/setup-node@v4
         with:
           node-version: 20
