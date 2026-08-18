@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-open-external-url"
+description = "Allows the Mail Collector desktop webview to ask the native shell to open trusted OAuth authorization URLs."
+commands.allow = ["open_external_url"]
