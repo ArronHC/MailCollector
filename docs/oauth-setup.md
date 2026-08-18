@@ -8,7 +8,9 @@ Mail Collector supports OAuth-first account setup for Gmail and Outlook / Micros
 2. Create an OAuth client with application type **Desktop app**.
 3. Copy the client ID into `GOOGLE_OAUTH_CLIENT_ID`.
 4. Enable the Gmail account access required by the app. Mail Collector currently keeps its IMAP/SMTP engine and requests the `https://mail.google.com/` scope so the OAuth access token can authenticate both protocols.
-5. For a public distribution, complete Google's OAuth app verification requirements before treating the integration as production-ready. The Gmail scope used by IMAP/SMTP is intentionally broad.
+5. For a public distribution, complete Google's OAuth app verification requirements before treating the integration as production-ready.
+
+`https://mail.google.com/` is a Google restricted scope and covers IMAP/SMTP access. A public production app using this scope must complete restricted-scope verification unless it qualifies for an exception, and Google can require recurring security assessment/reverification for restricted-scope access. Plan this as an operational/compliance dependency rather than only a client-ID setup step.
 
 Desktop builds use a loopback redirect on the local Mail Collector service and open the authorization page in the system browser. Do not add a client secret to the desktop app.
 
