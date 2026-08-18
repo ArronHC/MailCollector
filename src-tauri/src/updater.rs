@@ -127,7 +127,7 @@ if (Test-Path -LiteralPath $env:MC_APP_PATH) {
             .creation_flags(CREATE_NO_WINDOW);
         launcher.spawn().map_err(|error| error.to_string())?;
         app.exit(0);
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(windows))]
