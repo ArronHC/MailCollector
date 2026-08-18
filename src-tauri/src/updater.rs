@@ -105,7 +105,16 @@ pub async fn install_update(app: AppHandle, version: String) -> Result<(), Strin
         .await
         .map_err(|error| error.to_string())??;
 
-        let launch_script = "Start-Sleep -Seconds 7; Start-Process -FilePath $env:MC_INSTALLER_PATH";
+        let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        let launch_script = r#"
+$ErrorActionPreference = 'Stop'
+Start-Sleep -Seconds 7
+$process = Start-Process -FilePath $env:MC_INSTALLER_PATH -ArgumentList '/S' -Wait -PassThru
+if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+if (Test-Path -LiteralPath $env:MC_APP_PATH) {
+  Start-Process -FilePath $env:MC_APP_PATH
+}
+"#;
         let mut launcher = Command::new("powershell.exe");
         launcher
             .args([
@@ -117,6 +126,7 @@ pub async fn install_update(app: AppHandle, version: String) -> Result<(), Strin
                 launch_script,
             ])
             .env("MC_INSTALLER_PATH", &installer)
+            .env("MC_APP_PATH", current_exe)
             .creation_flags(CREATE_NO_WINDOW);
         launcher.spawn().map_err(|error| error.to_string())?;
         app.exit(0);
