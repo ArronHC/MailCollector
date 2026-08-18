@@ -4,9 +4,11 @@ Mail Collector release builds must be Authenticode-signed before GitHub Release 
 
 This is separate from Tauri updater signatures. Authenticode identifies the Windows publisher of the application/installer; updater signatures protect update metadata and payload integrity.
 
-## Preferred option: Azure Artifact Signing
+## Preferred option when eligible: Azure Artifact Signing
 
-Use Azure Artifact Signing when the account is eligible and the signing profile is available. Configure these GitHub Actions values:
+Use Azure Artifact Signing when the publisher is eligible for a Public Trust certificate profile and the required Azure subscription is available. Microsoft applies regional, subscription, identity-validation, and RBAC eligibility requirements to Public Trust signing, so verify the current Artifact Signing prerequisites before choosing this path. If Public Trust onboarding is unavailable for the publisher, use another publicly trusted code-signing provider rather than Private Trust for a public Windows download.
+
+Configure these GitHub Actions values:
 
 Secrets:
 
@@ -39,6 +41,8 @@ Repository variables:
 - `WINDOWS_TIMESTAMP_TSP=true` for RFC 3161 timestamping; set `false` only when the certificate provider explicitly requires legacy Authenticode timestamping
 
 The release job writes the PFX only into the ephemeral runner, imports it into `Cert:\CurrentUser\My`, removes the temporary PFX file, and asks Tauri to sign with the imported certificate thumbprint using SHA-256.
+
+If a chosen CA/provider only offers hardware-backed or cloud-backed keys and cannot expose an exportable PFX, add that provider's supported signing client as a Tauri `signCommand` integration instead of copying private-key material into GitHub Actions.
 
 ## Auto mode
 
