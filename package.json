@@ -1,6 +1,6 @@
 {
   "name": "mail-collector",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,7 @@
     "typecheck:server": "tsc --noEmit",
     "typecheck:web": "tsc -p frontend/tsconfig.json --noEmit",
     "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",
-    "build:desktop": "npm run build && npm run prepare:desktop-runtime",
+    "build:desktop": "npm run build && npm run prepare-desktop-runtime.mjs",
     "desktop": "tauri dev",
     "dist:win": "tauri build --bundles nsis",
     "start": "node dist/server.js",
@@ -35,7 +35,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.3",
-    "@types/mailparser": "^3.4.6",
+    "@types/mailparser": "^3.7.4",
     "@types/node": "^24.2.1",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19.2.18",
