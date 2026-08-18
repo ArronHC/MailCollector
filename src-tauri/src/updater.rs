@@ -105,7 +105,7 @@ pub async fn install_update(app: AppHandle, version: String) -> Result<(), Strin
         .await
         .map_err(|error| error.to_string())??;
 
-        let launch_script = "Start-Sleep -Seconds 2; Start-Process -FilePath $env:MC_INSTALLER_PATH";
+        let launch_script = "Start-Sleep -Seconds 7; Start-Process -FilePath $env:MC_INSTALLER_PATH";
         let mut launcher = Command::new("powershell.exe");
         launcher
             .args([
