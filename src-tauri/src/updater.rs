@@ -81,26 +81,23 @@ pub async fn install_update(app: AppHandle, version: String) -> Result<(), Strin
 
     #[cfg(windows)]
     {
-        let app_data = app.path().app_data_dir().map_err(|error| error.to_string())?;
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
         let updates_dir = app_data.join("updates");
         fs::create_dir_all(&updates_dir).map_err(|error| error.to_string())?;
 
         let installer_name = format!("Mail.Collector_{version}_x64-setup.exe");
         let installer_path = updates_dir.join(&installer_name);
         let checksum_path = updates_dir.join(format!("{installer_name}.sha256"));
-        let base_url = format!(
-            "https://github.com/ArronHC/MailCollector/releases/download/v{version}"
-        );
+        let base_url =
+            format!("https://github.com/ArronHC/MailCollector/releases/download/v{version}");
         let installer_url = format!("{base_url}/{installer_name}");
         let checksum_url = format!("{installer_url}.sha256");
 
         let installer = tauri::async_runtime::spawn_blocking(move || {
-            download_verified_installer(
-                installer_path,
-                checksum_path,
-                installer_url,
-                checksum_url,
-            )
+            download_verified_installer(installer_path, checksum_path, installer_url, checksum_url)
         })
         .await
         .map_err(|error| error.to_string())??;
