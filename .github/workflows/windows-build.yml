@@ -52,14 +52,23 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - name: Prepare Windows Authenticode signing
+        if: env.WINDOWS_SIGNING_MODE != '' && env.WINDOWS_SIGNING_MODE != 'none'
         shell: pwsh
         run: ./scripts/prepare-windows-signing.ps1
       - name: Build signed Windows installer
+        if: env.WINDOWS_SIGNING_MODE != '' && env.WINDOWS_SIGNING_MODE != 'none'
         shell: pwsh
         run: npx tauri build --bundles nsis --config src-tauri/tauri.signing.conf.json
       - name: Verify Windows Authenticode signatures
+        if: env.WINDOWS_SIGNING_MODE != '' && env.WINDOWS_SIGNING_MODE != 'none'
         shell: pwsh
         run: ./scripts/verify-windows-signing.ps1
+      - name: Build unsigned Windows installer
+        if: env.WINDOWS_SIGNING_MODE == '' || env.WINDOWS_SIGNING_MODE == 'none'
+        shell: pwsh
+        run: |
+          Write-Warning "Building an unsigned Windows release. Windows/SmartScreen may display publisher or reputation warnings."
+          npx tauri build --bundles nsis
       - uses: actions/upload-artifact@v4
         with:
           name: mail-collector-windows-${{ steps.version.outputs.tag }}
