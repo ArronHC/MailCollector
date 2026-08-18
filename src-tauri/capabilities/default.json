@@ -12,6 +12,7 @@
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
-    "allow-open-external-url"
+    "allow-open-external-url",
+    "allow-install-update"
   ]
 }
