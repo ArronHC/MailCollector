@@ -1,5 +1,6 @@
 import { CheckCircle2, CircleHelp, LoaderCircle, LogOut, Menu, Search, Settings, Sparkles, TriangleAlert, UserRound } from "lucide-react";
 import { CollectorMark } from "./BrandIcons";
+import { UpdateNotice } from "./UpdateNotice";
 import { MenuButton, Popover } from "./Ui";
 
 export function TopSearchBar({ value, onChange }: { value: string; onChange: (value: string) => void }) {
@@ -45,5 +46,5 @@ interface TopBarProps {
 }
 
 export function TopBar({ search, onSearch, accountCount, syncing, classifying, error, lastSyncLabel, backendLabel, onSync, onClassify, onToggleSidebar, onHelp, onSettings, onManageAccounts, onLogout }: TopBarProps) {
-  return <header className="top-bar"><div className="brand-area"><button className="icon-button menu-button interactive" aria-label="折叠侧栏" onClick={onToggleSidebar}><Menu /></button><div className="mail-brand"><CollectorMark /><div><span>Mail Collector</span><small>聚合邮件空间</small></div></div></div><div className="top-main"><TopSearchBar value={search} onChange={onSearch} /><div className="top-right"><ClassifyButton classifying={classifying} onClassify={onClassify} /><SyncStatus accountCount={accountCount} syncing={syncing} error={error} lastSyncLabel={lastSyncLabel} onSync={onSync} /><UserActions backendLabel={backendLabel} onHelp={onHelp} onSettings={onSettings} onManageAccounts={onManageAccounts} onLogout={onLogout} /></div></div></header>;
+  return <><header className="top-bar"><div className="brand-area"><button className="icon-button menu-button interactive" aria-label="折叠侧栏" onClick={onToggleSidebar}><Menu /></button><div className="mail-brand"><CollectorMark /><div><span>Mail Collector</span><small>聚合邮件空间</small></div></div></div><div className="top-main"><TopSearchBar value={search} onChange={onSearch} /><div className="top-right"><ClassifyButton classifying={classifying} onClassify={onClassify} /><SyncStatus accountCount={accountCount} syncing={syncing} error={error} lastSyncLabel={lastSyncLabel} onSync={onSync} /><UserActions backendLabel={backendLabel} onHelp={onHelp} onSettings={onSettings} onManageAccounts={onManageAccounts} onLogout={onLogout} /></div></div></header><UpdateNotice /></>;
 }
