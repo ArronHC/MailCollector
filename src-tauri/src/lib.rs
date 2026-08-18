@@ -1,3 +1,5 @@
+mod updater;
+
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use updater::install_update;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -339,7 +342,7 @@ pub fn run() {
     let exit_state = Arc::clone(&sidecar_state);
 
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![open_external_url])
+        .invoke_handler(tauri::generate_handler![open_external_url, install_update])
         .setup(move |app| {
             let app_data = app
                 .path()
