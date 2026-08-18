@@ -44,6 +44,19 @@ jobs:
         run: npm ci --prefix ..
       - name: Prepare and smoke-test desktop runtime
         run: npm run build:desktop --prefix ..
+      - name: Validate Windows signing scripts
+        shell: pwsh
+        working-directory: .
+        run: |
+          foreach ($file in @("scripts/prepare-windows-signing.ps1", "scripts/verify-windows-signing.ps1")) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+          }
       - run: cargo fmt --check
       - run: cargo test --all-targets --all-features
       - run: cargo clippy --all-targets --all-features -- -D warnings
