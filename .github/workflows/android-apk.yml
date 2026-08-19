@@ -20,9 +20,9 @@ jobs:
         run: npm ci
       - name: Build frontend
         run: npm run build:web
-      - name: Install Capacitor Android
+      - name: Install Capacitor Android tooling
         run: |
-          npm install --save-dev @capacitor/android@^8.0.0
+          npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8
           npx cap add android || true
       - name: Sync Android project
         run: npx cap sync android
