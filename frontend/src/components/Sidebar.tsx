@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { MailAccount, MailLabel, MessageView } from "../data/mailData";
 import { accountSource, sourceNames } from "../data/mailData";
 import { AccountBrand } from "./BrandIcons";
+import { MobileNav } from "./MobileNav";
 
 export function ComposeButton({ onClick }: { onClick: () => void }) {
   return <button className="compose-button interactive" onClick={onClick}><Plus /><span>写新邮件</span></button>;
@@ -88,5 +89,8 @@ interface SidebarProps {
 
 export function Sidebar(props: SidebarProps) {
   const { accounts, labels, activeAccountId, activeNavigation, activeLabelId, unreadCount, draftCount, onAccountSelect, onViewChange, onLabelSelect, onCompose, onAddAccount, onManageAccount, onCreateLabel } = props;
-  return <aside className="sidebar"><ComposeButton onClick={onCompose} /><AccountList accounts={accounts} activeAccountId={activeAccountId} onSelect={(id) => onAccountSelect(id)} onAdd={onAddAccount} onManage={onManageAccount} /><MailNavigation active={activeNavigation} unreadCount={unreadCount} draftCount={draftCount} onChange={onViewChange} /><LabelList labels={labels} activeLabelId={activeLabelId} onSelect={onLabelSelect} onCreate={onCreateLabel} /></aside>;
+  return <>
+    <aside className="sidebar"><ComposeButton onClick={onCompose} /><AccountList accounts={accounts} activeAccountId={activeAccountId} onSelect={(id) => onAccountSelect(id)} onAdd={onAddAccount} onManage={onManageAccount} /><MailNavigation active={activeNavigation} unreadCount={unreadCount} draftCount={draftCount} onChange={onViewChange} /><LabelList labels={labels} activeLabelId={activeLabelId} onSelect={onLabelSelect} onCreate={onCreateLabel} /></aside>
+    <MobileNav activeNavigation={activeNavigation} unreadCount={unreadCount} draftCount={draftCount} onViewChange={onViewChange} onCompose={onCompose} />
+  </>;
 }
