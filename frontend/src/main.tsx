@@ -7,6 +7,7 @@ import "./styles.css";
 import "./visual-polish.css";
 import "./interaction-settings.css";
 import "./account-sync.css";
+import "./mobile.css";
 
 initializeAppSettings();
 
