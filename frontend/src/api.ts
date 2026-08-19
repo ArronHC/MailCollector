@@ -1,4 +1,5 @@
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions } from "./data/mailData";
+import { resolveApiUrl } from "./mobile-backend";
 
 const legacyApiKey = "mailCollectorApiKey";
 const localApiKeyKey = "mailCollectorApiKey:local";
@@ -25,10 +26,10 @@ async function fetchLocal(path: string, options: RequestInit = {}, key = localAp
   const headers = new Headers(options.headers);
   if (options.body) headers.set("Content-Type", "application/json");
   if (key) headers.set("X-API-Key", key);
-  return fetch(path, {
+  return fetch(resolveApiUrl(path), {
     ...options,
     headers,
-    credentials: "same-origin"
+    credentials: "include"
   });
 }
 
@@ -93,26 +94,8 @@ export const auth = {
 export type OAuthMailProvider = "google" | "microsoft";
 export type OAuthFlowStatus = { status: "pending" | "authorized" | "success" | "error"; error: string; accountId: number | null };
 
-export type AccountSyncStatus = {
-  enabled: boolean;
-  relayUrl: string;
-  hasRelayToken: boolean;
-  hasSyncKey: boolean;
-  recoveryKey: string;
-  configured: boolean;
-  lastCursor: number;
-  lastSyncAt: string | null;
-  lastError: string | null;
-  syncing: boolean;
-};
-
-export type AccountSyncResult = {
-  pulled: number;
-  pushed: number;
-  deleted: number;
-  conflicts: number;
-  cursor: number;
-};
+export type AccountSyncStatus = { enabled: boolean; relayUrl: string; hasRelayToken: boolean; hasSyncKey: boolean; recoveryKey: string; configured: boolean; lastCursor: number; lastSyncAt: string | null; lastError: string | null; syncing: boolean };
+export type AccountSyncResult = { pulled: number; pushed: number; deleted: number; conflicts: number; cursor: number };
 
 export const api = {
   accounts: () => request<{ accounts: MailAccount[] }>("/api/accounts"),
@@ -128,8 +111,6 @@ export const api = {
   updateMessage: (id: number, actions: MessageActions) => request<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify(actions) }),
   bulkMessages: (ids: number[], actions: MessageActions) => request<{ ok: true; updated: number; missingIds: number[] }>("/api/messages/bulk", { method: "POST", body: JSON.stringify({ ids, ...actions }) }),
   deleteMessage: (id: number) => request<void>(`/api/messages/${id}`, { method: "DELETE" }),
-  setRead: (id: number, isRead: boolean) => request<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify({ isRead }) }),
-  setStarred: (id: number, isStarred: boolean) => request<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify({ isStarred }) }),
   syncAll: () => request<{ ok: boolean; succeeded: unknown[]; failed: unknown[] }>("/api/sync", { method: "POST" }),
   syncAccount: (id: number) => request<unknown>(`/api/accounts/${id}/sync`, { method: "POST" }),
   classify: (accountId?: number) => request<{ ok: true; classified: number; changed: number; unchanged: number; unclassified: number; byLabel: Record<string, number> }>("/api/classify", { method: "POST", body: JSON.stringify(accountId ? { accountId } : {}) }),
