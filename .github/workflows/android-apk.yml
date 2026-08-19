@@ -15,9 +15,23 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - uses: android-actions/setup-android@v3
       - name: Install dependencies
         run: npm ci
       - name: Build frontend
         run: npm run build:web
-      - name: Prepare Android build
-        run: echo "Capacitor Android packaging stage"
+      - name: Install Capacitor Android
+        run: |
+          npm install --save-dev @capacitor/android@^8.0.0
+          npx cap add android || true
+      - name: Sync Android project
+        run: npx cap sync android
+      - name: Build APK
+        run: |
+          cd android
+          ./gradlew assembleDebug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mail-collector-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
