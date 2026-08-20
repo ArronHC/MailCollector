@@ -1,4 +1,5 @@
 const MOBILE_BACKEND_KEY = "mailCollectorMobileBackendUrl";
+const MOBILE_DEVICE_TOKEN_KEY = "mailCollectorMobileDeviceToken";
 
 type CapacitorBridge = {
   isNativePlatform?: () => boolean;
@@ -38,6 +39,22 @@ export function setMobileBackendUrl(value: string): string {
   const normalized = normalizeMobileBackendUrl(value);
   localStorage.setItem(MOBILE_BACKEND_KEY, normalized);
   return normalized;
+}
+
+export function getMobileDeviceToken(): string {
+  if (!isNativeMobile()) return "";
+  return localStorage.getItem(MOBILE_DEVICE_TOKEN_KEY) ?? "";
+}
+
+export function setMobileDeviceToken(value: string): string {
+  const token = value.trim();
+  if (token.length < 24) throw new Error("设备凭证无效");
+  localStorage.setItem(MOBILE_DEVICE_TOKEN_KEY, token);
+  return token;
+}
+
+export function clearMobileDeviceToken(): void {
+  localStorage.removeItem(MOBILE_DEVICE_TOKEN_KEY);
 }
 
 export function resolveApiUrl(path: string): string {
