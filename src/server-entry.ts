@@ -27,6 +27,7 @@ const pairingManager = new DevicePairingManager(config.databasePath, pairingSecr
 const controlDatabase = new MailDatabase(config.databasePath);
 const pairingPublicBaseUrl = process.env.PAIRING_PUBLIC_BASE_URL?.trim() || undefined;
 const sessionCookieName = "mail_collector_session";
+const expectedApiKey = Buffer.from(config.apiKey);
 const runtimeDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const relayManager = new RelayManager({
   dataDir: path.dirname(config.databasePath),
@@ -44,15 +45,38 @@ const relayConfigSchema = z.object({
   authToken: z.string().max(1024).optional()
 });
 
-function requireDesktopSession(request: express.Request, response: express.Response, next: express.NextFunction): void {
+function appSessionUser(request: express.Request) {
   const token = readCookie(request.header("cookie"), sessionCookieName);
-  const user = token ? controlDatabase.getAppUserForSession(hashSessionToken(token)) : null;
+  return token ? controlDatabase.getAppUserForSession(hashSessionToken(token)) : null;
+}
+
+function validApiKey(value: string): boolean {
+  const supplied = Buffer.from(value);
+  return supplied.length === expectedApiKey.length && crypto.timingSafeEqual(supplied, expectedApiKey);
+}
+
+function requireAppSession(request: express.Request, response: express.Response, next: express.NextFunction): void {
+  const user = appSessionUser(request);
   if (!user) {
-    response.status(401).json({ error: "请先在桌面端登录" });
+    response.status(401).json({ error: "请先使用桌面账户登录后再管理配对设备" });
     return;
   }
   response.locals.authUser = user;
   next();
+}
+
+function requireDesktopControl(request: express.Request, response: express.Response, next: express.NextFunction): void {
+  const user = appSessionUser(request);
+  if (user) {
+    response.locals.authUser = user;
+    next();
+    return;
+  }
+  if (validApiKey(request.header("x-api-key") ?? "")) {
+    next();
+    return;
+  }
+  response.status(401).json({ error: "请先在桌面端登录" });
 }
 
 function controlErrorHandler(error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction): void {
@@ -69,7 +93,7 @@ const pairingApp = express();
 pairingApp.disable("x-powered-by");
 pairingApp.use(express.json({ limit: "100kb" }));
 pairingApp.use("/api/device-pairing", createDevicePairingPublicRouter(pairingManager));
-pairingApp.use("/api/device-pairing", requireDesktopSession);
+pairingApp.use("/api/device-pairing", requireAppSession);
 pairingApp.use(
   "/api/device-pairing",
   createDevicePairingProtectedRouter(pairingManager, { publicBaseUrl: pairingPublicBaseUrl })
@@ -79,7 +103,7 @@ pairingApp.use(controlErrorHandler);
 const relayApp = express();
 relayApp.disable("x-powered-by");
 relayApp.use(express.json({ limit: "100kb" }));
-relayApp.use("/api/relay", requireDesktopSession);
+relayApp.use("/api/relay", requireDesktopControl);
 relayApp.get("/api/relay/status", (_request, response) => response.json(relayManager.status()));
 relayApp.put("/api/relay/config", async (request, response, next) => {
   try {
