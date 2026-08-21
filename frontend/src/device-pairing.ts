@@ -1,4 +1,4 @@
-import { normalizeMobileBackendUrl, setMobileBackendUrl, setMobileDeviceToken } from "./mobile-backend";
+import { normalizeMobileBackendUrl, resolveApiUrl, setMobileBackendUrl, setMobileDeviceToken } from "./mobile-backend";
 
 const pairingPrivateKeyKey = "mailCollectorPairingPrivateKey";
 const pairingSessionKey = "mailCollectorPairingSession";
@@ -20,6 +20,13 @@ export type PairingRequest = {
   expiresAt: string;
 };
 
+export type PairingOffer = {
+  pairingId: string;
+  code: string;
+  expiresAt: string;
+  publicBaseUrl: string;
+};
+
 export type PairingBundle = {
   version: 1;
   backendUrl: string;
@@ -38,6 +45,13 @@ type EncryptedEnvelope = {
   version: 1;
   iv: string;
   ciphertext: string;
+};
+
+type PairingPollResult = {
+  status: "requested" | "approved" | "rejected" | "expired";
+  approverPublicKey?: string;
+  encryptedBundle?: string;
+  deviceId?: string;
 };
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -72,6 +86,18 @@ async function deriveEnvelopeKey(privateKey: JsonWebKey, peerPublicKey: JsonWebK
     false,
     ["encrypt", "decrypt"]
   );
+}
+
+async function jsonFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  headers.set("Accept", "application/json");
+  if (options.body) headers.set("Content-Type", "application/json");
+  const response = await fetch(url, { ...options, headers, credentials: "include" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? `请求失败 (${response.status})`);
+  }
+  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
 
 export async function createRequesterPublicKey(): Promise<string> {
@@ -136,4 +162,79 @@ export function getMobileRecoveryKey(): string {
 export function pairingServiceUrl(): string {
   const configured = (import.meta.env.VITE_PAIRING_SERVICE_URL as string | undefined)?.trim() ?? "";
   return configured.replace(/\/+$/, "");
+}
+
+export async function requestDevicePairing(serviceUrl: string, code: string): Promise<PairingSession> {
+  const normalizedService = normalizeMobileBackendUrl(serviceUrl);
+  const requesterPublicKey = await createRequesterPublicKey();
+  const result = await jsonFetch<{ pairingId: string; joinToken: string; expiresAt: string }>(`${normalizedService}/api/device-pairing/join`, {
+    method: "POST",
+    body: JSON.stringify({
+      code,
+      deviceName: navigator.userAgent.includes("Android") ? "Android device" : "Mobile device",
+      platform: navigator.userAgent.includes("Android") ? "android" : "mobile",
+      requesterPublicKey
+    })
+  });
+  const session = { ...result, serviceUrl: normalizedService };
+  savePairingSession(session);
+  return session;
+}
+
+export async function pollDevicePairing(session: PairingSession): Promise<PairingPollResult> {
+  return jsonFetch<PairingPollResult>(`${session.serviceUrl}/api/device-pairing/${encodeURIComponent(session.pairingId)}/poll`, {
+    method: "POST",
+    body: JSON.stringify({ joinToken: session.joinToken })
+  });
+}
+
+export async function finishApprovedPairing(result: PairingPollResult): Promise<PairingBundle> {
+  if (result.status !== "approved" || !result.approverPublicKey || !result.encryptedBundle) throw new Error("配对尚未批准");
+  const bundle = await decryptPairingBundle(result.approverPublicKey, result.encryptedBundle);
+  applyPairingBundle(bundle);
+  return bundle;
+}
+
+export async function createPairingOffer(): Promise<PairingOffer> {
+  return jsonFetch<PairingOffer>(resolveApiUrl("/api/device-pairing/create"), { method: "POST" });
+}
+
+export async function listPendingPairings(): Promise<PairingRequest[]> {
+  const result = await jsonFetch<{ requests: PairingRequest[] }>(resolveApiUrl("/api/device-pairing/pending"));
+  return result.requests;
+}
+
+async function generateDeviceCredential(): Promise<{ deviceId: string; deviceToken: string; deviceTokenHash: string }> {
+  const deviceId = crypto.randomUUID();
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const deviceToken = bytesToBase64Url(tokenBytes);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(deviceToken)));
+  const deviceTokenHash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return { deviceId, deviceToken, deviceTokenHash };
+}
+
+export async function approvePairingRequest(request: PairingRequest, backendUrl: string, recoveryKey: string): Promise<void> {
+  const credential = await generateDeviceCredential();
+  const bundle: PairingBundle = {
+    version: 1,
+    backendUrl: normalizeMobileBackendUrl(backendUrl),
+    recoveryKey,
+    deviceId: credential.deviceId,
+    deviceToken: credential.deviceToken,
+    issuedAt: new Date().toISOString()
+  };
+  const encrypted = await encryptPairingBundle(request.requesterPublicKey, bundle);
+  await jsonFetch(resolveApiUrl(`/api/device-pairing/${encodeURIComponent(request.pairingId)}/approve`), {
+    method: "POST",
+    body: JSON.stringify({
+      deviceId: credential.deviceId,
+      deviceTokenHash: credential.deviceTokenHash,
+      approverPublicKey: encrypted.approverPublicKey,
+      encryptedBundle: encrypted.encryptedBundle
+    })
+  });
+}
+
+export async function rejectPairingRequest(pairingId: string): Promise<void> {
+  await jsonFetch(resolveApiUrl(`/api/device-pairing/${encodeURIComponent(pairingId)}/reject`), { method: "POST" });
 }
