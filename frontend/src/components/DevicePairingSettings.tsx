@@ -13,6 +13,7 @@ export function DevicePairingSettings() {
   const [offer, setOffer] = useState<PairingOffer | null>(null);
   const [pending, setPending] = useState<PairingRequest[]>([]);
   const [backendUrl, setBackendUrl] = useState("");
+  const [relayHint, setRelayHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -35,9 +36,18 @@ export function DevicePairingSettings() {
     setBusy(true);
     setError("");
     try {
-      const created = await createPairingOffer();
+      const [created, relay] = await Promise.all([
+        createPairingOffer(),
+        api.relayStatus().catch(() => null)
+      ]);
       setOffer(created);
-      setBackendUrl(created.publicBaseUrl || window.location.origin);
+      if (relay?.enabled && relay.publicUrl) {
+        setBackendUrl(relay.publicUrl);
+        setRelayHint(relay.publicReachable ? "已自动使用可用的 VPS Relay 地址。" : "已自动使用 VPS Relay 地址；建议先在上方测试公网入口。 ");
+      } else {
+        setBackendUrl(created.publicBaseUrl || window.location.origin);
+        setRelayHint("");
+      }
       setPending([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "无法创建设备配对码");
@@ -83,7 +93,7 @@ export function DevicePairingSettings() {
       <strong className="pairing-code">{offer.code}</strong>
       <span>在手机 Mail Collector 中输入此代码。</span>
       <label><span>手机连接地址</span><input value={backendUrl} onChange={(event) => setBackendUrl(event.target.value)} placeholder="https://mail.example.com" /></label>
-      <small>如果这里是 127.0.0.1，请改成手机实际能访问的局域网或 HTTPS 地址。</small>
+      <small>{relayHint || "如果这里是 127.0.0.1，请改成手机实际能访问的局域网或 HTTPS 地址。"}</small>
     </div> : null}
     {pending.map((request) => <div className="setting-row" key={request.pairingId}>
       <div><strong>{request.deviceName}</strong><span>{request.platform} · 正在请求配对</span></div>
