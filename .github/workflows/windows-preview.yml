@@ -1,0 +1,59 @@
+name: Windows Preview
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/windows-preview.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: Build unsigned NSIS preview
+    runs-on: windows-2022
+    env:
+      npm_config_msvs_version: "2022"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build Windows preview installer
+        run: npx tauri build --bundles nsis
+      - name: Verify relay runtime and installer
+        shell: pwsh
+        run: |
+          $frpc = Join-Path $PWD "src-tauri/resources/runtime/frpc.exe"
+          if (-not (Test-Path $frpc)) {
+            throw "Preview runtime is missing frpc.exe"
+          }
+          $version = (& $frpc --version).Trim()
+          if ($version -notin @("0.70.1", "v0.70.1")) {
+            throw "Unexpected frpc version: $version"
+          }
+          $installers = @(Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe")
+          if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer, found $($installers.Count)"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installers[0].FullName).Hash.ToLowerInvariant()
+          "$hash  $($installers[0].Name)" | Set-Content -Encoding ascii "$($installers[0].FullName).sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mail-collector-windows-preview
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sha256
+          if-no-files-found: error
