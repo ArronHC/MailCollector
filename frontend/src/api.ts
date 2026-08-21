@@ -1,5 +1,5 @@
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions } from "./data/mailData";
-import { resolveApiUrl } from "./mobile-backend";
+import { getMobileDeviceToken, resolveApiUrl } from "./mobile-backend";
 
 const legacyApiKey = "mailCollectorApiKey";
 const localApiKeyKey = "mailCollectorApiKey:local";
@@ -26,6 +26,8 @@ async function fetchLocal(path: string, options: RequestInit = {}, key = localAp
   const headers = new Headers(options.headers);
   if (options.body) headers.set("Content-Type", "application/json");
   if (key) headers.set("X-API-Key", key);
+  const deviceToken = getMobileDeviceToken();
+  if (!key && deviceToken) headers.set("X-Device-Token", deviceToken);
   return fetch(resolveApiUrl(path), {
     ...options,
     headers,
