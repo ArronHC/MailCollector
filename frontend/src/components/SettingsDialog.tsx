@@ -3,6 +3,7 @@ import { Modal } from "./Ui";
 import { AccountSyncSettings } from "./AccountSyncSettings";
 import { DevicePairingSettings } from "./DevicePairingSettings";
 import { VpsRelaySettings } from "./VpsRelaySettings";
+import { isNativeMobile } from "../mobile-backend";
 import { resetAppSettings, untrustRemoteImageSender, updateAppSettings, useAppSettings } from "../settings";
 
 function SettingRow({ title, detail, children }: { title: string; detail: string; children: React.ReactNode }) {
@@ -11,6 +12,7 @@ function SettingRow({ title, detail, children }: { title: string; detail: string
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const settings = useAppSettings();
+  const nativeMobile = isNativeMobile();
   return <Modal open={open} title="设置" onClose={onClose} className="settings-modal">
     <div className="settings-shell">
       <section className="settings-section">
@@ -34,8 +36,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       </section>
 
       <AccountSyncSettings />
-      <VpsRelaySettings />
-      <DevicePairingSettings />
+      {!nativeMobile ? <><VpsRelaySettings /><DevicePairingSettings /></> : null}
 
       <section className="settings-section compact-section">
         <header><ShieldCheck /><div><h3>隐私</h3><p>远程图片仍通过现有 CSP 隔离策略加载，不会放开脚本、表单或网络请求。</p></div></header>
