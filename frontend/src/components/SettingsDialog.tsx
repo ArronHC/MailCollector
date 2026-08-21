@@ -1,6 +1,7 @@
 import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Modal } from "./Ui";
 import { AccountSyncSettings } from "./AccountSyncSettings";
+import { DevicePairingSettings } from "./DevicePairingSettings";
 import { resetAppSettings, untrustRemoteImageSender, updateAppSettings, useAppSettings } from "../settings";
 
 function SettingRow({ title, detail, children }: { title: string; detail: string; children: React.ReactNode }) {
@@ -32,6 +33,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       </section>
 
       <AccountSyncSettings />
+      <DevicePairingSettings />
 
       <section className="settings-section compact-section">
         <header><ShieldCheck /><div><h3>隐私</h3><p>远程图片仍通过现有 CSP 隔离策略加载，不会放开脚本、表单或网络请求。</p></div></header>
