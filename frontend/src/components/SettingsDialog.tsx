@@ -2,6 +2,7 @@ import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, ShieldCheck, SlidersHorizon
 import { Modal } from "./Ui";
 import { AccountSyncSettings } from "./AccountSyncSettings";
 import { DevicePairingSettings } from "./DevicePairingSettings";
+import { VpsRelaySettings } from "./VpsRelaySettings";
 import { resetAppSettings, untrustRemoteImageSender, updateAppSettings, useAppSettings } from "../settings";
 
 function SettingRow({ title, detail, children }: { title: string; detail: string; children: React.ReactNode }) {
@@ -33,6 +34,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       </section>
 
       <AccountSyncSettings />
+      <VpsRelaySettings />
       <DevicePairingSettings />
 
       <section className="settings-section compact-section">
