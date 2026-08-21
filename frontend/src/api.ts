@@ -99,6 +99,32 @@ export type OAuthFlowStatus = { status: "pending" | "authorized" | "success" | "
 export type AccountSyncStatus = { enabled: boolean; relayUrl: string; hasRelayToken: boolean; hasSyncKey: boolean; recoveryKey: string; configured: boolean; lastCursor: number; lastSyncAt: string | null; lastError: string | null; syncing: boolean };
 export type AccountSyncResult = { pulled: number; pushed: number; deleted: number; conflicts: number; cursor: number };
 
+export type RelayStatus = {
+  available: boolean;
+  frpVersion: string;
+  configured: boolean;
+  enabled: boolean;
+  processRunning: boolean;
+  tunnelConnected: boolean;
+  publicReachable: boolean;
+  serverAddr: string;
+  serverPort: number;
+  remotePort: number;
+  publicUrl: string;
+  hasAuthToken: boolean;
+  lastProbeAt: string | null;
+  lastProbeLatencyMs: number | null;
+  lastError: string | null;
+};
+export type RelayConfig = {
+  enabled: boolean;
+  serverAddr: string;
+  serverPort: number;
+  remotePort: number;
+  publicUrl: string;
+  authToken?: string;
+};
+
 export const api = {
   accounts: () => request<{ accounts: MailAccount[] }>("/api/accounts"),
   providers: () => request<{ providers: MailProvider[] }>("/api/providers"),
@@ -108,6 +134,10 @@ export const api = {
   ensureAccountSyncRecoveryKey: () => request<{ recoveryKey: string; status: AccountSyncStatus }>("/api/account-sync/recovery-key", { method: "POST" }),
   configureAccountSync: (body: { enabled: boolean; relayUrl?: string; relayToken?: string; syncKey?: string }) => request<AccountSyncStatus>("/api/account-sync/config", { method: "PUT", body: JSON.stringify(body) }),
   syncAccounts: () => request<AccountSyncResult>("/api/account-sync/sync", { method: "POST" }),
+  relayStatus: () => request<RelayStatus>("/api/relay/status"),
+  configureRelay: (body: RelayConfig) => request<RelayStatus>("/api/relay/config", { method: "PUT", body: JSON.stringify(body) }),
+  restartRelay: () => request<RelayStatus>("/api/relay/restart", { method: "POST" }),
+  testRelay: () => request<RelayStatus>("/api/relay/test", { method: "POST" }),
   messages: (params: URLSearchParams) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`),
   message: (id: number) => request<{ message: MailDetail }>(`/api/messages/${id}`),
   updateMessage: (id: number, actions: MessageActions) => request<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify(actions) }),
