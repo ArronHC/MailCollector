@@ -123,8 +123,12 @@ export class RelayManager {
 
     if (input.enabled) {
       if (!serverAddr) throw Object.assign(new Error("请输入 VPS 地址"), { status: 400 });
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(serverAddr) || /\s/.test(serverAddr)) {
+        throw Object.assign(new Error("VPS 地址只填写主机名或 IP，不要带协议和端口"), { status: 400 });
+      }
       if (authToken.length < 16) throw Object.assign(new Error("Relay Token 至少需要 16 个字符"), { status: 400 });
       if (!publicUrl) throw Object.assign(new Error("请输入手机访问的 HTTPS 地址"), { status: 400 });
+      if (!publicUrl.startsWith("https://")) throw Object.assign(new Error("VPS Relay 公网入口必须使用 HTTPS"), { status: 400 });
     }
 
     const stored: StoredRelaySettings = {
@@ -279,9 +283,12 @@ export class RelayManager {
     const onOutput = (chunk: Buffer) => this.handleOutput(chunk.toString("utf8"));
     child.stdout?.on("data", onOutput);
     child.stderr?.on("data", onOutput);
-    child.on("error", (error) => this.captureError(error));
+    child.on("error", (error) => {
+      if (this.child === child) this.captureError(error);
+    });
     child.on("exit", (code, signal) => {
-      if (this.child === child) this.child = null;
+      if (this.child !== child) return;
+      this.child = null;
       this.tunnelConnected = false;
       if (!this.intentionalStop && !this.closed && this.settings?.enabled) {
         this.lastError = `FRP 客户端已退出${code !== null ? ` (${code})` : signal ? ` (${signal})` : ""}，正在自动重连`;
@@ -296,8 +303,9 @@ export class RelayManager {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
-    if (this.child && this.child.exitCode === null) this.child.kill();
+    const child = this.child;
     this.child = null;
+    if (child && child.exitCode === null) child.kill();
     this.tunnelConnected = false;
     this.publicReachable = false;
   }
@@ -315,7 +323,11 @@ export class RelayManager {
   }
 
   private handleOutput(output: string): void {
-    fs.appendFileSync(this.logPath, output);
+    try {
+      fs.appendFileSync(this.logPath, output);
+    } catch {
+      // Relay status must not crash the mail service if log persistence fails.
+    }
     const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     for (const line of lines) {
       if (/login to server success|start proxy success/i.test(line)) {
