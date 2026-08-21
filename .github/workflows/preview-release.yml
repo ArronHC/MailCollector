@@ -107,6 +107,7 @@ jobs:
     needs: [windows, android]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: preview-release-*
@@ -141,3 +142,22 @@ jobs:
             - The VPS is transport-only; the Windows Mail Collector host must remain online for Android access.
           files: release-assets/*
           fail_on_unmatched_files: true
+      - name: Record successful publication
+        shell: bash
+        run: |
+          mkdir -p .github
+          cat > .github/release-status.md <<EOF
+          # Preview release status
+
+          - Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}
+          - Tag: ${RELEASE_TAG}
+          - Source commit: ${GITHUB_SHA}
+          - Windows asset: MailCollector-Windows-${RELEASE_TAG}-x64-setup.exe
+          - Android asset: MailCollector-Android-${RELEASE_TAG}-debug.apk
+          - Status: published successfully
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/release-status.md
+          git commit -m "chore: record ${RELEASE_TAG} publication"
+          git push origin HEAD:feature/device-pairing-sync-v2
