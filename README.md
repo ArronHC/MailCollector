@@ -1,104 +1,633 @@
 # 收信台 Mail Collector
 
-一个本地优先、面向单用户的多邮箱聚合客户端。
+Mail Collector 是一个本地优先的多邮箱聚合客户端。Windows 桌面端保存邮件数据并直接连接邮箱服务商；Android 客户端通过你自己的 VPS Relay 安全访问桌面端。
 
-Mail Collector 在每台设备上直接连接 IMAP/SMTP，邮件正文、索引、草稿和标签均保存在本机。多台设备各自连接邮箱服务商，已读和星标等已写回服务端的状态通过邮箱服务商自然收敛，不需要自建任何服务器。
+> 当前移动端 + VPS Relay 为预览功能。Windows 预览安装包未签名，Android 为 debug APK。
 
-[下载最新 Windows 客户端](https://github.com/ArronHC/MailCollector/releases/latest)
+## 下载
 
-## 介绍
+本次 VPS Relay 预览版：
 
-### 为什么使用 Mail Collector
+- [Windows 安装包 + Android APK](https://github.com/ArronHC/MailCollector/releases/tag/v0.10.1-vps-relay-preview.1)
+- [全部 Releases](https://github.com/ArronHC/MailCollector/releases)
 
-- 在一个界面中查看 Gmail、Outlook、iCloud、QQ、163、126 和其他标准 IMAP 邮箱。
-- 邮件数据留在自己的设备，不依赖第三方邮件聚合服务。
-- 多台设备可以各自连接同一邮箱；已读和星标等服务端状态会通过邮箱服务商同步。
-- 同时支持 Windows 桌面客户端和浏览器开发模式，桌面版无需单独安装 Node.js。
+预览版 Release 中包含：
 
-### 工作方式
+- `MailCollector-Windows-v0.10.1-vps-relay-preview.1-x64-setup.exe`
+- `MailCollector-Windows-v0.10.1-vps-relay-preview.1-x64-setup.exe.sha256`
+- `MailCollector-Android-v0.10.1-vps-relay-preview.1-debug.apk`
+- `MailCollector-Android-v0.10.1-vps-relay-preview.1-debug.apk.sha256`
+
+## 架构
+
+推荐的移动端架构如下：
 
 ```text
-┌─────────────────────────── 设备 A ──────────────────────────────┐
-│ React 界面 + 本地 Node sidecar + SQLite                         │
-│ 邮件、正文、草稿、标签、索引和本机加密后的邮箱凭据               │
-└───────────────┬─────────────────────────────────────────────────┘
-                │ IMAP / SMTP
-                ▼
-           邮箱服务商
-                ▲
-                │ IMAP / SMTP
-┌───────────────┴─────────────────────────────────────────────────┐
-│ React 界面 + 本地 Node sidecar + SQLite                         │
-│ 邮件、正文、草稿、标签、索引和本机加密后的邮箱凭据               │
-└─────────────────────────── 设备 B ──────────────────────────────┘
+Android
+   │
+   │ HTTPS :443
+   ▼
+mail.example.com
+Nginx / Caddy / Nginx Proxy Manager
+   │
+   ▼
+VPS 127.0.0.1:23001
+   │
+   │ frps
+   │ TLS + Relay Token
+   ▼
+Internet
+   ▲
+   │ frpc 主动建立连接
+   │
+Windows Mail Collector
+   │
+   ▼
+127.0.0.1:<随机端口>
+Node sidecar + SQLite
 ```
 
-每台设备独立连接邮箱服务商并保存邮件。当前只有已读和星标状态会写回 IMAP 并在设备间自然同步；归档、移动、垃圾箱、垃圾邮件、本地标签、草稿和稍后提醒目前保持本机语义。
+VPS 只负责传输流量。邮箱密码、OAuth Token、SQLite 数据库、邮件正文、草稿和索引仍保存在 Windows 主机，不会同步到 VPS。
 
-### 已实现功能
+Android 要访问邮件时，Windows Mail Collector 必须处于运行状态。如果 Windows 主机离线，VPS 不会保存一份邮件副本供手机继续访问。
 
-- 多个标准 IMAP 邮箱账户与统一收件箱。
-- Gmail、Outlook、iCloud、QQ、163、126 常见服务器预设。
-- 添加账户前测试 IMAP 连接。
-- 首次同步最近邮件，之后按 UID 增量同步并分页回填历史邮件。
-- 持久化校验 IMAP UIDVALIDITY，UID 空间变化时安全重建本地数据。
-- 聚合列表、按账户筛选、发件人和主题搜索、正文阅读。
-- 已读和星标状态写回 IMAP，并支持星标筛选。
-- 收件箱、归档、垃圾箱、垃圾邮件、稍后提醒、草稿和已发送视图。
-- 默认标签、自定义标签、批量整理和本地规则自动分类。
-- 本地草稿与 SMTP 发送，发送成功后保存本地已发送副本。
-- 定时同步、手动同步、IMAP IDLE 和 NOOP fallback。
-- 超大或解析失败邮件保留元数据占位，不阻塞后续同步。
-- AES-256-GCM 加密保存邮箱密码或授权码。
-- 沙箱与 CSP 隔离邮件 HTML，禁止脚本和表单，并默认阻止远程 HTTP/HTTPS 内容以降低跟踪像素泄露风险。
+## 快速开始
 
-### 技术栈
+完整流程只有四步：
+
+1. 在 VPS 安装并配置 `frps v0.70.1`。
+2. 给 VPS 配置一个 HTTPS 域名，例如 `https://mail.example.com`。
+3. 在 Windows Mail Collector 中填写 VPS Relay 设置并测试连通。
+4. 桌面生成 6 位配对码，在 Android 上输入并由桌面批准。
+
+下面分别说明每一端的操作。
+
+---
+
+## Windows 桌面端操作指南
+
+### 1. 安装
+
+从上面的预览 Release 下载：
+
+```text
+MailCollector-Windows-v0.10.1-vps-relay-preview.1-x64-setup.exe
+```
+
+运行安装程序即可。当前预览包没有 Authenticode 签名，因此 Windows SmartScreen 可能显示“未知发布者”，这是预览构建的已知现象。
+
+桌面安装包已经内置：
+
+- Mail Collector UI
+- Node.js sidecar
+- 生产依赖
+- `frpc v0.70.1`
+
+不需要另行安装 Node.js 或 FRP 客户端。
+
+本地数据库、密钥和 Relay 配置保存在当前 Windows 用户的应用数据目录，不会写入安装包。
+
+### 2. 添加邮箱
+
+打开 Mail Collector 后，在账户界面添加需要聚合的邮箱。
+
+常见邮箱准备方式：
+
+- Gmail：优先使用应用支持的 OAuth；如果使用 IMAP 密码方式，需要 Google 允许的应用专用凭据。
+- Outlook / Microsoft 365：优先使用 OAuth；部分租户已经禁用传统密码式 IMAP。
+- iCloud：在 Apple ID 中创建 App 专用密码。
+- QQ / 163 / 126：先在邮箱设置中开启 IMAP/SMTP，再使用生成的授权码。
+- 自建邮箱：填写服务商提供的 IMAP 主机、端口、TLS 和认证信息。
+
+### 3. 配置 VPS Relay
+
+先完成后面的 VPS 部署，再回到 Windows：
+
+```text
+设置 → VPS Relay
+```
+
+填写：
+
+| 设置项 | 示例 | 说明 |
+| --- | --- | --- |
+| 启用 VPS Relay | 开启 | 保存后自动启动 frpc |
+| VPS 地址 | `203.0.113.10` 或 `vps.example.com` | 不要带 `http://` / `https://` |
+| FRP 服务端口 | `7000` | 必须与 `frps.toml` 的 `bindPort` 一致 |
+| Relay 端口 | `23001` | 必须与 `allowPorts` 和反代目标一致 |
+| 手机 HTTPS 地址 | `https://mail.example.com` | 手机最终只访问这个地址 |
+| Relay Token | 一段长随机字符串 | 必须与 VPS 上 `auth.token` 完全一致 |
+
+点击：
+
+```text
+保存并应用
+```
+
+正常情况下状态会依次变成：
+
+```text
+FRP 进程：运行中
+隧道：已连接
+```
+
+然后点击：
+
+```text
+测试公网入口
+```
+
+测试会实际执行完整链路：
+
+```text
+Windows → frpc → VPS frps → 127.0.0.1:23001
+        → HTTPS 反向代理 → 公网域名 → Windows Mail Collector
+```
+
+只有“公网入口可访问”成功后再进行手机配对。
+
+### 4. 生成手机配对码
+
+进入：
+
+```text
+设置 → 设备配对
+```
+
+点击：
+
+```text
+生成配对码
+```
+
+会出现一个 6 位一次性代码。代码有效期为 5 分钟，并且只能完成一次配对。
+
+当 VPS Relay 已配置时，桌面端会优先使用 Relay 的 HTTPS 地址作为手机连接地址。
+
+手机提交配对请求后，桌面会显示设备名称和平台。确认是自己的手机后点击：
+
+```text
+批准
+```
+
+配对完成后，Android 会获得独立的 Device Token。手机不会保存桌面的 API Key。
+
+### 5. 日常使用
+
+Windows Mail Collector 打开时：
+
+```text
+本机 Node sidecar
+      ↑
+    frpc
+      ↑
+     VPS
+      ↑
+   Android
+```
+
+关闭 Windows Mail Collector 后，frpc 会同时关闭，手机将无法连接。
+
+frpc 如果异常退出，Mail Collector 会尝试自动重连。
+
+---
+
+## VPS 操作指南
+
+### 1. 准备条件
+
+需要：
+
+- 一台 Linux VPS
+- 一个域名，例如 `mail.example.com`
+- 域名 A/AAAA 记录指向 VPS
+- TCP `443` 对公网开放
+- TCP `7000` 能被 Windows 主机访问
+- TCP `23001` **不要对公网开放**
+
+推荐端口用途：
+
+```text
+443    Android → HTTPS
+7000   Windows frpc → VPS frps
+23001  VPS 本机反向代理 → FRP 转发端口
+```
+
+生成 Relay Token：
+
+```bash
+openssl rand -hex 32
+```
+
+保存输出，后面 VPS 和 Windows 要填写同一个 Token。
+
+### 2. 配置 frps v0.70.1
+
+Mail Collector 桌面端固定使用 FRP `v0.70.1`，VPS 建议保持同一版本。
+
+创建：
+
+```text
+/etc/frp/frps.toml
+```
+
+内容：
+
+```toml
+bindAddr = "0.0.0.0"
+bindPort = 7000
+
+# 让 23001 只监听 VPS 本机，禁止 Internet 直接访问。
+proxyBindAddr = "127.0.0.1"
+
+auth.method = "token"
+auth.token = "替换为 openssl rand -hex 32 生成的 Token"
+auth.additionalScopes = ["HeartBeats", "NewWorkConns"]
+
+# 拒绝未使用 TLS 的 frpc 控制连接。
+transport.tls.force = true
+
+# 此 frps 只允许 Mail Collector 使用 23001。
+allowPorts = [
+  { single = 23001 }
+]
+```
+
+#### Docker Compose 方式
+
+Linux 上可以使用 host network，使 `proxyBindAddr = "127.0.0.1"` 真正绑定到 VPS 本机回环地址。
+
+```yaml
+services:
+  frps:
+    image: ghcr.io/fatedier/frps:v0.70.1
+    container_name: mailcollector-frps
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /etc/frp/frps.toml:/etc/frp/frps.toml:ro
+    command: ["-c", "/etc/frp/frps.toml"]
+```
+
+启动：
+
+```bash
+docker compose up -d
+docker logs -f mailcollector-frps
+```
+
+#### 原生二进制 / systemd 方式
+
+也可以下载 FRP 官方 `v0.70.1` Linux 包，把 `frps` 放到 `/usr/local/bin/frps`，然后创建 systemd 服务：
+
+```ini
+[Unit]
+Description=Mail Collector FRP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/frps -c /etc/frp/frps.toml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+保存为：
+
+```text
+/etc/systemd/system/mailcollector-frps.service
+```
+
+然后：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mailcollector-frps
+sudo systemctl status mailcollector-frps
+```
+
+### 3. 防火墙
+
+至少确认：
+
+```text
+443/tcp   允许 Internet
+7000/tcp  允许 Windows 主机访问
+23001/tcp 不允许 Internet
+```
+
+如果 Windows 有固定公网 IP，可以进一步把 `7000/tcp` 只允许该 IP，提高安全性。
+
+不要为了排错把 `23001` 长期开放到 `0.0.0.0`。
+
+### 4. 配置 HTTPS 域名
+
+把：
+
+```text
+mail.example.com
+```
+
+解析到 VPS。
+
+#### Caddy
+
+最简单的配置：
+
+```caddy
+mail.example.com {
+    reverse_proxy 127.0.0.1:23001
+}
+```
+
+Caddy 正常情况下会自动申请和续期 HTTPS 证书。
+
+#### Nginx
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name mail.example.com;
+
+    ssl_certificate     /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:23001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 120s;
+        client_max_body_size 20m;
+    }
+}
+```
+
+#### Nginx Proxy Manager
+
+如果 Nginx Proxy Manager 运行在 Docker 中，容器内的 `127.0.0.1` 指向 NPM 容器自己，而不是 VPS 主机。
+
+需要让 NPM 通过以下任一方式访问 VPS 主机的 `23001`：
+
+- host network；
+- `host-gateway`；
+- 与 FRP 使用受控的私有 Docker 网络。
+
+不要简单把 `23001:23001` 发布到所有公网网卡。
+
+### 5. VPS 自检
+
+Windows Relay 已连接以后，在 VPS 本机测试：
+
+```bash
+curl http://127.0.0.1:23001/api/service
+```
+
+再测试公网 HTTPS：
+
+```bash
+curl https://mail.example.com/api/service
+```
+
+两者都应返回 Mail Collector 服务信息。
+
+如果第一个失败，问题通常在 FRP。
+
+如果第一个成功、第二个失败，问题通常在域名、TLS 或反向代理。
+
+---
+
+## Android 操作指南
+
+### 1. 安装 APK
+
+从预览 Release 下载：
+
+```text
+MailCollector-Android-v0.10.1-vps-relay-preview.1-debug.apk
+```
+
+Android 可能要求允许当前浏览器或文件管理器“安装未知应用”。这是侧载 APK 的正常系统权限。
+
+当前为 debug APK，仅用于预览测试。
+
+### 2. 首次配对
+
+先保证：
+
+- Windows Mail Collector 正在运行；
+- Windows 中 VPS Relay 显示已连接；
+- “测试公网入口”成功；
+- 桌面已经生成 6 位配对码。
+
+打开 Android Mail Collector，选择配对码方式。
+
+填写：
+
+```text
+服务地址：https://mail.example.com
+配对码：桌面显示的 6 位数字
+```
+
+提交后手机会等待桌面批准。
+
+回到 Windows：
+
+```text
+设置 → 设备配对 → 批准
+```
+
+批准后，手机会完成加密密钥交换并保存：
+
+- VPS HTTPS 地址
+- Android 自己的 Device Token
+
+不会保存桌面 API Key。
+
+### 3. 配对后的使用
+
+之后 Android 直接访问：
+
+```text
+https://mail.example.com/api/...
+```
+
+请求路径为：
+
+```text
+Android
+  → HTTPS
+  → VPS
+  → FRP
+  → Windows Mail Collector
+```
+
+不需要与 Windows 位于同一 Wi-Fi，也不需要知道 Windows 局域网 IP。
+
+### 4. 手机无法连接时
+
+按顺序检查：
+
+1. Windows Mail Collector 是否开着。
+2. Windows「设置 → VPS Relay」里的 FRP 进程是否运行。
+3. 隧道是否显示已连接。
+4. “测试公网入口”是否成功。
+5. 手机上填写的域名是否是 HTTPS。
+6. 配对凭证是否仍有效；持续出现 401 时重新配对。
+
+---
+
+## 配对与认证是怎么工作的
+
+设备配对使用：
+
+```text
+P-256 ECDH
+   ↓
+HKDF-SHA256
+   ↓
+AES-GCM
+```
+
+桌面批准后，配对 bundle 加密传给 Android。
+
+Android 之后使用独立的：
+
+```text
+X-Device-Token
+```
+
+访问 Mail Collector API。
+
+VPS Relay 又有单独一层 FRP Token，因此是两套不同的凭证：
+
+```text
+FRP Relay Token
+用于 Windows ↔ VPS
+
+Device Token
+用于 Android ↔ Mail Collector API
+```
+
+Relay Token 在 Windows 本地使用 Mail Collector 的 AES-256-GCM 密钥加密保存。生成的 `frpc.toml` 不包含明文 Token，而是通过环境变量模板注入。
+
+---
+
+## 常见故障排查
+
+### Relay 显示“FRP 客户端不可用”
+
+请确认安装的是包含 VPS Relay 的最新 Windows 版本。预览安装包已经内置并在 CI 中校验 `frpc v0.70.1`。
+
+### FRP 进程运行，但隧道未连接
+
+检查：
+
+- VPS `7000/tcp` 是否可达；
+- `frps` 是否正在运行；
+- Windows 和 VPS 的 Relay Token 是否完全一致；
+- `frps.toml` 是否允许 `23001`；
+- 服务端是否强制 TLS，但客户端版本过旧。
+
+VPS：
+
+```bash
+docker logs mailcollector-frps
+```
+
+或：
+
+```bash
+journalctl -u mailcollector-frps -f
+```
+
+### 隧道已连接，但公网入口测试失败
+
+在 VPS 上依次执行：
+
+```bash
+curl http://127.0.0.1:23001/api/service
+curl https://mail.example.com/api/service
+```
+
+第一条失败：检查 FRP。
+
+第一条成功、第二条失败：检查 DNS、HTTPS 证书和 Nginx/Caddy/NPM。
+
+### Android 显示 401
+
+设备凭证无效或配对信息已经丢失。重新生成配对码并批准手机。
+
+### Android 显示超时 / 502
+
+通常意味着：
+
+- Windows 电脑关机或休眠；
+- Mail Collector 已退出；
+- frpc 与 VPS 断开；
+- VPS 反代无法访问 `127.0.0.1:23001`。
+
+### Windows SmartScreen 警告
+
+当前 VPS Relay 预览安装包未签名。正式发布启用 Authenticode 签名后可消除此类“未知发布者”提示。
+
+---
+
+## 安全建议
+
+- VPS 的 `23001` 必须只在本机或受控私网可访问。
+- 对公网只开放 HTTPS `443`；FRP `7000` 能限制来源 IP 时尽量限制。
+- Relay Token 建议至少 32 字节随机值。
+- 不要把 Relay Token 提交进 Git 仓库、截图或公开日志。
+- 手机只使用 HTTPS 公网地址，不要把未加密 HTTP 暴露到 Internet。
+- VPS 不需要保存邮箱密码、OAuth Token、数据库或邮件正文。
+- Windows 本地 Node sidecar 继续绑定 `127.0.0.1`，不要为了移动端直接改成公网监听。
+- 如果怀疑 Relay Token 泄露，立即在 VPS 生成新 Token，并在 Windows Relay 设置中同步更换。
+
+---
+
+## 已实现功能
+
+- 多邮箱统一收件箱。
+- Gmail、Outlook、iCloud、QQ、163、126 和标准 IMAP 邮箱。
+- OAuth/密码等账户认证路径。
+- IMAP 增量同步、UIDVALIDITY 校验、历史邮件分页回填。
+- 聚合列表、账户筛选、发件人/主题搜索和正文阅读。
+- 已读、星标、归档、垃圾箱、垃圾邮件、草稿、已发送等视图。
+- 自定义标签、批量整理和规则分类。
+- SMTP 发信和本地草稿。
+- IMAP IDLE / NOOP fallback 与定时同步。
+- AES-256-GCM 加密本地凭据。
+- HTML 邮件 iframe 沙箱与 CSP 防护。
+- Windows Tauri 桌面端。
+- Android Capacitor 客户端。
+- 6 位一次性设备配对。
+- Android Device Token 鉴权。
+- Windows 自动管理 VPS FRP Relay。
+
+## 技术栈
 
 | 部分 | 技术 |
 | --- | --- |
-| 界面 | React 19、TypeScript、Tailwind CSS、Vite |
-| 桌面 | Tauri 2、Rust、系统 WebView2 |
-| 本地邮件引擎 | Node.js、Express、ImapFlow、Nodemailer、MailParser |
+| UI | React 19、TypeScript、Tailwind CSS、Vite |
+| Windows | Tauri 2、Rust、WebView2 |
+| Android | Capacitor 8 |
+| 邮件引擎 | Node.js、Express、ImapFlow、Nodemailer、MailParser |
 | 数据 | SQLite、better-sqlite3 |
+| VPS Relay | FRP v0.70.1 + HTTPS reverse proxy |
+| 设备配对 | P-256 ECDH、HKDF-SHA256、AES-GCM |
 
-### 当前边界
+---
 
-- 当前定位是单用户、本地优先客户端，不提供多租户隔离。
-- 目前正式打包目标为 Windows；浏览器模式主要用于本地开发，并未提供 Android/iOS 客户端。
-- Gmail 和 Microsoft 账户暂时通过通用 IMAP 连接，尚未接入 OAuth 2.0、Gmail History API 或 Microsoft Graph。
-- 移动、归档、垃圾箱、垃圾邮件、标签、稍后提醒和永久删除保持本地语义；已读和星标状态通过 operation outbox 异步写回 IMAP。
-- 邮件正文按需下载并缓存。附件数据可能随 MIME 正文传输，但当前版本不保存附件内容，也不提供附件下载。
-- 自定义 IMAP 主机默认不能解析到回环、私网、链路本地或保留地址。
+## 本地开发
 
-## 客户端
+### Node / Web
 
-### 下载与安装
-
-Windows 用户可从 [Releases](https://github.com/ArronHC/MailCollector/releases/latest) 下载最新的 `Mail.Collector_*_x64-setup.exe`。
-
-桌面版使用当前用户安装模式，运行时包含邮件引擎所需的 Node sidecar。安装后无需另行启动后端服务。
-
-本地数据库、密钥和客户端连接设置保存在当前 Windows 用户的应用数据目录中，不会写入安装包。
-
-### 多设备使用
-
-- 邮箱连接配置和邮件数据都只保存在当前设备。
-- 每台设备需要各自添加一次邮箱账户。
-- 当前已读和星标状态通过邮箱服务商自然同步；归档、移动、本地标签、草稿和稍后提醒不跨设备。
-
-### 邮箱准备
-
-- Gmail：开启两步验证并创建应用专用密码，普通登录密码通常不能用于 IMAP。
-- Outlook / Microsoft 365：部分租户已禁用密码式 IMAP，这类账户需要等待 OAuth 2.0 支持。
-- iCloud：在 Apple ID 中创建 App 专用密码。
-- QQ / 163 / 126：在邮箱设置中开启 IMAP，并使用生成的授权码。
-- 自建邮箱：填写服务商提供的 IMAP 主机、端口和 TLS 设置。
-
-SMTP 会根据已知 IMAP 主机选择安全参数：Gmail、QQ、163、126 使用 465 TLS，Outlook 和 iCloud 使用 587 STARTTLS。无法识别的自定义主机默认拒绝发送，避免错误地向未知 SMTP 端点提交凭据。
-
-### 本地开发
-
-要求 Node.js 20 或更高版本。
+要求 Node.js 20 或更高版本；Android/Capacitor 构建使用 Node.js 22。
 
 ```bash
 npm install
@@ -113,36 +642,57 @@ API_KEY=<至少 24 个字符的随机字符串>
 REGISTRATION_INVITE_CODE=<至少 12 个字符的私密邀请码>
 ```
 
-分别启动本地后端和 Vite：
+启动：
 
 ```bash
 npm run dev
 npm run dev:web
 ```
 
-开发界面位于 <http://localhost:5173>，API 请求会代理到 <http://127.0.0.1:3000>。
+开发界面：
 
-生产构建和测试：
-
-```bash
-npm run build
-npm run typecheck
-npm test
+```text
+http://localhost:5173
 ```
 
-构建 Windows 安装包还需要 Rust 工具链和 WebView2：
+生产检查：
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+### Windows 构建
+
+需要 Rust、Windows WebView2 和 Windows C++ 构建工具：
 
 ```bash
 npm run dist:win
 ```
 
-安装包输出到 `src-tauri/target/release/bundle/nsis/`。
+`prepare:desktop-runtime` 会在 Windows 构建主机上下载官方 FRP v0.70.1 archive、校验官方 SHA-256，然后把 `frpc.exe` 打入桌面 runtime。
 
-### 客户端安全说明
+### Android 构建
 
-- `ENCRYPTION_KEY` 用于加密本机数据库中的邮箱密码或授权码，丢失后无法恢复已有凭据。
-- `API_KEY` 用于接口认证，长度至少为 24 个字符。
-- 本地管理员密码使用 `scrypt` 加盐慢哈希保存，会话 Cookie 使用 HttpOnly 和 SameSite=Strict。
-- 只应在可信个人设备上选择记住 API Key。
-- 邮件 HTML 在沙箱 iframe 中显示；远程 HTTP/HTTPS 图片、字体、媒体和子框架默认被 CSP 阻止，脚本和表单同样被禁止。
-- 如需连接私网 IMAP 服务，可显式设置 `ALLOW_PRIVATE_MAIL_HOSTS=true`，但应先确认目标地址可信。
+需要 Node.js 22、JDK 21 和 Android SDK：
+
+```bash
+npm run build:web
+npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8
+npx cap add android
+npx cap sync android
+cd android
+./gradlew assembleDebug
+```
+
+APK 位于：
+
+```text
+android/app/build/outputs/apk/debug/
+```
+
+## 进一步文档
+
+- [`docs/vps-relay.md`](docs/vps-relay.md)：VPS Relay 的独立部署说明。
+- GitHub Actions 会持续验证 Node、Rust、Windows runtime、FRP bundle 和 Android APK 构建。
