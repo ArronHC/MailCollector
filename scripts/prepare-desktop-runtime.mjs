@@ -80,8 +80,21 @@ async function ensureFrpc() {
 
   const target = path.join(runtime, "frpc.exe");
   if (fs.existsSync(target)) {
-    console.log(`Using existing frpc.exe for frp v${frpVersion}`);
-    return;
+    try {
+      const currentVersion = execFileSync(target, ["--version"], {
+        encoding: "utf8",
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"]
+      }).trim();
+      if (currentVersion === frpVersion || currentVersion === `v${frpVersion}`) {
+        console.log(`Using existing frpc.exe v${frpVersion}`);
+        return;
+      }
+      console.log(`Replacing stale frpc.exe (${currentVersion || "unknown"}) with v${frpVersion}`);
+    } catch {
+      console.log(`Replacing unreadable frpc.exe with v${frpVersion}`);
+    }
+    fs.rmSync(target, { force: true });
   }
 
   const archiveName = `frp_${frpVersion}_windows_${arch}.zip`;
@@ -103,20 +116,30 @@ async function ensureFrpc() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mailcollector-frp-"));
   const archivePath = path.join(tempRoot, archiveName);
   const extractDir = path.join(tempRoot, "extract");
-  fs.writeFileSync(archivePath, archive);
-  fs.mkdirSync(extractDir, { recursive: true });
-  const psQuote = (value) => `'${value.replace(/'/g, "''")}'`;
-  execFileSync("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(extractDir)} -Force`
-  ], { stdio: "inherit" });
-  const source = path.join(extractDir, `frp_${frpVersion}_windows_${arch}`, "frpc.exe");
-  if (!fs.existsSync(source)) throw new Error(`frpc.exe not found in ${archiveName}`);
-  fs.copyFileSync(source, target);
-  execFileSync(target, ["--version"], { stdio: "inherit", windowsHide: true });
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  try {
+    fs.writeFileSync(archivePath, archive);
+    fs.mkdirSync(extractDir, { recursive: true });
+    const psQuote = (value) => `'${value.replace(/'/g, "''")}'`;
+    execFileSync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(extractDir)} -Force`
+    ], { stdio: "inherit" });
+    const source = path.join(extractDir, `frp_${frpVersion}_windows_${arch}`, "frpc.exe");
+    if (!fs.existsSync(source)) throw new Error(`frpc.exe not found in ${archiveName}`);
+    fs.copyFileSync(source, target);
+    const installedVersion = execFileSync(target, ["--version"], {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    }).trim();
+    if (installedVersion !== frpVersion && installedVersion !== `v${frpVersion}`) {
+      throw new Error(`Unexpected frpc version after extraction: ${installedVersion || "unknown"}`);
+    }
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
   console.log(`Bundled frpc v${frpVersion} (${arch})`);
 }
 
