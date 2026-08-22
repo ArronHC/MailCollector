@@ -3,12 +3,25 @@ name: Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [feature/mobile-experience]
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'src-tauri/icons/**'
+      - 'capacitor.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/android-apk.yml'
   pull_request:
     paths:
       - 'frontend/**'
+      - 'src-tauri/icons/**'
       - 'capacitor.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/android-apk.yml'
+
+permissions:
+  contents: write
 
 concurrency:
   group: android-apk-${{ github.event.pull_request.number || github.ref }}
@@ -31,18 +44,66 @@ jobs:
         run: npm ci
       - name: Build frontend
         run: npm run build:web
-      - name: Install Capacitor Android tooling
+      - name: Verify first-run styles are bundled
+        shell: bash
         run: |
-          npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8
-          npx cap add android || true
+          set -euo pipefail
+          grep --recursive --include='*.css' --quiet '.mobile-backend-setup' public/assets
+      - name: Install Capacitor Android tooling
+        run: npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8 @capacitor/assets@3
+      - name: Create Android project
+        run: npx cap add android
+      - name: Generate Android launcher assets
+        run: |
+          npx capacitor-assets generate \
+            --android \
+            --assetPath src-tauri/icons \
+            --iconBackgroundColor '#f1f4f0' \
+            --iconBackgroundColorDark '#102f28' \
+            --splashBackgroundColor '#f1f4f0' \
+            --splashBackgroundColorDark '#102f28'
       - name: Sync Android project
         run: npx cap sync android
+      - name: Verify generated launcher icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          test -n "$(find android/app/src/main/res -type f -path '*/mipmap-*/*' -name 'ic_launcher*.png' -print -quit)"
       - name: Build APK
         run: |
           cd android
           ./gradlew assembleDebug
-      - name: Upload APK
+      - name: Prepare versioned APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          apk="MailCollector-${version}-android-debug.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$apk"
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mail-collector-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: mail-collector-${{ steps.apk.outputs.version }}-android-apk
+          path: ${{ steps.apk.outputs.path }}
+      - name: Upload APK to GitHub Release
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_PATH: ${{ steps.apk.outputs.path }}
+          VERSION: ${{ steps.apk.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$APK_PATH" --clobber
+          else
+            gh release create "$tag" "$APK_PATH" \
+              --target "$GITHUB_SHA" \
+              --title "Mail Collector v${VERSION}" \
+              --notes "Mail Collector v${VERSION} release."
+          fi
