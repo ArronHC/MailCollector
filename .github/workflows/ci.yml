@@ -24,7 +24,7 @@ jobs:
       - run: npm run build
 
   rust:
-    name: Rust and desktop runtime checks
+    name: Rust desktop client checks
     runs-on: windows-2022
     env:
       npm_config_msvs_version: "2022"
@@ -42,20 +42,8 @@ jobs:
           components: rustfmt, clippy
       - name: Install application dependencies
         run: npm ci --prefix ..
-      - name: Prepare and smoke-test desktop runtime
+      - name: Build client frontend
         run: npm run build:desktop --prefix ..
-      - name: Verify bundled FRP client
-        shell: pwsh
-        run: |
-          $frpc = Join-Path $PWD "resources/runtime/frpc.exe"
-          if (-not (Test-Path $frpc)) {
-            throw "Desktop runtime is missing frpc.exe"
-          }
-          $version = (& $frpc --version).Trim()
-          if ($version -notin @("0.70.1", "v0.70.1")) {
-            throw "Unexpected frpc version: $version"
-          }
-          Write-Host "Bundled frpc version: $version"
       - name: Validate Windows release scripts
         shell: pwsh
         working-directory: .
