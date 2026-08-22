@@ -199,6 +199,6 @@ jobs:
               state: ok ? 'success' : 'failure',
               context: 'release/client',
               description: ok ? 'Windows + Android release published' : `windows=${results.windows}, android=${results.android}, publish=${results.publish}`,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+              target_url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
             });
             if (!ok) core.setFailed('Client release failed');
