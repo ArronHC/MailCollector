@@ -1,6 +1,6 @@
 [package]
 name = "mail-collector"
-version = "0.11.0"
+version = "0.12.0"
 description = "A local-first multi-device mail client"
 authors = ["OpenSpace"]
 edition = "2021"
