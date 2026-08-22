@@ -1,9 +1,10 @@
+import type { ReactNode } from "react";
 import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, Server, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Modal } from "./Ui";
 import { clearClientBackend, getMobileBackendUrl, isNativeClient } from "../mobile-backend";
 import { resetAppSettings, untrustRemoteImageSender, updateAppSettings, useAppSettings } from "../settings";
 
-function SettingRow({ title, detail, children }: { title: string; detail: string; children: React.ReactNode }) {
+function SettingRow({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
   return <div className="setting-row"><div><strong>{title}</strong><span>{detail}</span></div><div className="setting-control">{children}</div></div>;
 }
 
@@ -47,7 +48,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       <section className="settings-section compact-section">
         <header><ShieldCheck /><div><h3>隐私</h3><p>远程图片仍通过现有 CSP 隔离策略加载，不会放开脚本、表单或网络请求。</p></div></header>
         <div className="trusted-summary"><SlidersHorizontal /><span>已信任 {settings.trustedRemoteImageSenders.length} 个远程图片发件人</span>{settings.trustedRemoteImageSenders.length ? <button type="button" onClick={() => updateAppSettings({ trustedRemoteImageSenders: [] })}><Trash2 />全部清除</button> : null}</div>
-        {settings.trustedRemoteImageSenders.length ? <div className="trusted-sender-list">{settings.trustedRemoteImageSenders.map((sender) => <div key={sender}><span title={sender}>{sender}</span><button type="button" onClick={() => untrustRemoteImageSender(sender)} aria-label={`不再信任 ${sender}`} title="不再自动显示图片"><X /></button></div> : <p className="trusted-empty">当你在邮件正文中选择“始终显示此发件人的图片”后，会在这里管理。</p>}
+        {settings.trustedRemoteImageSenders.length ? <div className="trusted-sender-list">{settings.trustedRemoteImageSenders.map((sender) => <div key={sender}><span title={sender}>{sender}</span><button type="button" onClick={() => untrustRemoteImageSender(sender)} aria-label={`不再信任 ${sender}`} title="不再自动显示图片"><X /></button></div>)}</div> : <p className="trusted-empty">当你在邮件正文中选择“始终显示此发件人的图片”后，会在这里管理。</p>}
       </section>
 
       <footer className="settings-footer"><button onClick={() => resetAppSettings()}><RotateCcw />恢复默认设置</button><button className="primary-action" onClick={onClose}>完成</button></footer>
