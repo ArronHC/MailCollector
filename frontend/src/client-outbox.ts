@@ -1,4 +1,6 @@
-const OUTBOX_KEY = "mailCollectorSyncOutbox";
+import { getMobileBackendUrl } from "./mobile-backend";
+
+const OUTBOX_KEY_PREFIX = "mailCollectorSyncOutbox";
 
 export type PendingClientOperation = {
   id: string;
@@ -15,9 +17,14 @@ type MessageStatePatch = {
   snoozedUntil?: string | null;
 };
 
+function outboxKey(): string {
+  const backend = getMobileBackendUrl() || window.location.origin;
+  return `${OUTBOX_KEY_PREFIX}:${encodeURIComponent(backend)}`;
+}
+
 function load(): PendingClientOperation[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(OUTBOX_KEY) ?? "[]") as PendingClientOperation[];
+    const parsed = JSON.parse(localStorage.getItem(outboxKey()) ?? "[]") as PendingClientOperation[];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -25,37 +32,21 @@ function load(): PendingClientOperation[] {
 }
 
 function save(items: PendingClientOperation[]): void {
-  localStorage.setItem(OUTBOX_KEY, JSON.stringify(items.slice(-500)));
+  localStorage.setItem(outboxKey(), JSON.stringify(items.slice(-500)));
 }
 
-export function enqueueClientOperation(
-  operation: Omit<PendingClientOperation, "createdAt"> & { createdAt?: string }
-): PendingClientOperation {
+export function enqueueClientOperation(operation: Omit<PendingClientOperation, "createdAt"> & { createdAt?: string }): PendingClientOperation {
   const existing = load().find((item) => item.id === operation.id);
   if (existing) return existing;
-  const item: PendingClientOperation = {
-    ...operation,
-    createdAt: operation.createdAt ?? new Date().toISOString()
-  };
+  const item: PendingClientOperation = { ...operation, createdAt: operation.createdAt ?? new Date().toISOString() };
   save([...load(), item]);
   return item;
 }
 
-export function pendingClientOperations(): PendingClientOperation[] {
-  return load();
-}
-
-export function removeClientOperation(id: string): void {
-  save(load().filter((item) => item.id !== id));
-}
-
-export function clearClientOperations(): void {
-  localStorage.removeItem(OUTBOX_KEY);
-}
-
-export function pendingClientOperationCount(): number {
-  return load().length;
-}
+export function pendingClientOperations(): PendingClientOperation[] { return load(); }
+export function removeClientOperation(id: string): void { save(load().filter((item) => item.id !== id)); }
+export function clearClientOperations(): void { localStorage.removeItem(outboxKey()); }
+export function pendingClientOperationCount(): number { return load().length; }
 
 function statePatch(body: unknown): MessageStatePatch {
   if (!body || typeof body !== "object") return {};
@@ -64,9 +55,7 @@ function statePatch(body: unknown): MessageStatePatch {
     ...(typeof source.isRead === "boolean" ? { isRead: source.isRead } : {}),
     ...(typeof source.isStarred === "boolean" ? { isStarred: source.isStarred } : {}),
     ...(typeof source.folder === "string" ? { folder: source.folder } : {}),
-    ...(source.snoozedUntil === null || typeof source.snoozedUntil === "string"
-      ? { snoozedUntil: source.snoozedUntil as string | null }
-      : {})
+    ...(source.snoozedUntil === null || typeof source.snoozedUntil === "string" ? { snoozedUntil: source.snoozedUntil as string | null } : {})
   };
 }
 
@@ -106,16 +95,10 @@ export function applyPendingClientOperations<T>(path: string, value: T): T {
   const result = value as Record<string, unknown>;
 
   if (Array.isArray(result.messages)) {
-    let messages = result.messages
-      .filter((message) => !message || typeof message !== "object" || !deletedIds.has(Number((message as Record<string, unknown>).id)))
-      .map((message) => message && typeof message === "object"
-        ? applyPatch(message as Record<string, unknown>, patches)
-        : message);
+    let messages = result.messages.filter((message) => !message || typeof message !== "object" || !deletedIds.has(Number((message as Record<string, unknown>).id))).map((message) => message && typeof message === "object" ? applyPatch(message as Record<string, unknown>, patches) : message);
     const query = path.includes("?") ? new URLSearchParams(path.slice(path.indexOf("?") + 1)) : null;
     const view = query?.get("view");
-    if (view === "inbox" || view === "archive" || view === "trash" || view === "spam") {
-      messages = messages.filter((message) => !message || typeof message !== "object" || (message as Record<string, unknown>).folder === view);
-    }
+    if (view === "inbox" || view === "archive" || view === "trash" || view === "spam") messages = messages.filter((message) => !message || typeof message !== "object" || (message as Record<string, unknown>).folder === view);
     return { ...result, messages } as T;
   }
 
@@ -124,6 +107,5 @@ export function applyPendingClientOperations<T>(path: string, value: T): T {
     if (deletedIds.has(id)) return value;
     return { ...result, message: applyPatch(result.message as Record<string, unknown>, patches) } as T;
   }
-
   return value;
 }
