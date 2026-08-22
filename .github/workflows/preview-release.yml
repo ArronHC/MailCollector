@@ -1,4 +1,4 @@
-name: VPS Relay Preview Release
+name: VPS Core Preview Release
 
 on:
   push:
@@ -6,16 +6,17 @@ on:
       - feature/device-pairing-sync-v2
     paths:
       - ".github/workflows/preview-release.yml"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
-  RELEASE_TAG: v0.10.1-vps-relay-preview.1
+  RELEASE_TAG: v0.10.1-vps-core-preview.1
 
 jobs:
   windows:
-    name: Build Windows installer
+    name: Build Windows client
     runs-on: windows-2022
     env:
       npm_config_msvs_version: "2022"
@@ -32,23 +33,13 @@ jobs:
         run: npm run typecheck
       - name: Build unsigned Windows installer
         run: npx tauri build --bundles nsis
-      - name: Verify and stage Windows installer
+      - name: Stage Windows installer
         shell: pwsh
         run: |
-          $frpc = Join-Path $PWD "src-tauri/resources/runtime/frpc.exe"
-          if (-not (Test-Path $frpc)) {
-            throw "Release runtime is missing frpc.exe"
-          }
-          $frpVersion = (& $frpc --version).Trim()
-          if ($frpVersion -notin @("0.70.1", "v0.70.1")) {
-            throw "Unexpected frpc version: $frpVersion"
-          }
-
           $installers = @(Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe")
           if ($installers.Count -ne 1) {
             throw "Expected exactly one NSIS installer, found $($installers.Count)"
           }
-
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $name = "MailCollector-Windows-$env:RELEASE_TAG-x64-setup.exe"
           $target = Join-Path $PWD "release-assets/$name"
@@ -62,7 +53,7 @@ jobs:
           if-no-files-found: error
 
   android:
-    name: Build Android APK
+    name: Build Android client
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,51 +104,30 @@ jobs:
           pattern: preview-release-*
           path: release-assets
           merge-multiple: true
-      - name: List release assets
-        run: ls -lah release-assets
       - name: Publish prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Mail Collector v0.10.1 VPS Relay Preview 1
+          name: Mail Collector VPS Core Preview 1
           prerelease: true
           make_latest: false
           generate_release_notes: false
           body: |
-            VPS Relay + Android pairing preview.
+            Equal-client VPS Core preview.
+
+            Architecture:
+            - VPS is the long-running IMAP/SMTP/OAuth sync core.
+            - Windows and Android are equal clients and connect directly over HTTPS.
+            - Both clients maintain local read caches for recently accessed mail data.
+            - Windows no longer bundles a Node mail sidecar or FRP.
+            - Android no longer requires a desktop-generated pairing code or a running PC.
 
             Included:
-            - Windows x64 NSIS installer with bundled and SHA-256 verified frpc v0.70.1
+            - Windows x64 NSIS client installer
             - Android debug APK
-            - SHA-256 checksum files for both packages
-            - Managed Windows VPS Relay configuration and health test
-            - Six-digit Android device pairing with independent Device Token
+            - SHA-256 checksum files
 
-            Deployment and usage instructions are in the repository README.
-
-            Notes:
-            - The Windows preview installer is unsigned and may trigger SmartScreen.
-            - The Android package is a debug APK intended for preview testing.
-            - The VPS is transport-only; the Windows Mail Collector host must remain online for Android access.
+            See README.md for VPS deployment and migration instructions.
           files: release-assets/*
           fail_on_unmatched_files: true
-      - name: Record successful publication
-        shell: bash
-        run: |
-          mkdir -p .github
-          cat > .github/release-status.md <<EOF
-          # Preview release status
-
-          - Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}
-          - Tag: ${RELEASE_TAG}
-          - Source commit: ${GITHUB_SHA}
-          - Windows asset: MailCollector-Windows-${RELEASE_TAG}-x64-setup.exe
-          - Android asset: MailCollector-Android-${RELEASE_TAG}-debug.apk
-          - Status: published successfully
-          EOF
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/release-status.md
-          git commit -m "chore: record ${RELEASE_TAG} publication"
-          git push origin HEAD:feature/device-pairing-sync-v2
