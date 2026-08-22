@@ -1,5 +1,13 @@
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions } from "./data/mailData";
-import { getMobileDeviceToken, resolveApiUrl } from "./mobile-backend";
+import { readCachedResponse, writeCachedResponse } from "./client-cache";
+import {
+  clearClientSessionToken,
+  getClientSessionToken,
+  getMobileDeviceToken,
+  isNativeClient,
+  resolveApiUrl,
+  setClientSessionToken
+} from "./mobile-backend";
 
 const legacyApiKey = "mailCollectorApiKey";
 const localApiKeyKey = "mailCollectorApiKey:local";
@@ -22,28 +30,67 @@ function clearLocalApiKey() {
   localStorage.removeItem(localRememberedKey);
 }
 
+function clearAllAuth() {
+  clearLocalApiKey();
+  clearClientSessionToken();
+}
+
 async function fetchLocal(path: string, options: RequestInit = {}, key = localApiKey): Promise<Response> {
   const headers = new Headers(options.headers);
+  headers.set("Accept", "application/json");
   if (options.body) headers.set("Content-Type", "application/json");
-  if (key) headers.set("X-API-Key", key);
-  const deviceToken = getMobileDeviceToken();
-  if (!key && deviceToken) headers.set("X-Device-Token", deviceToken);
+
+  const nativeToken = getClientSessionToken();
+  if (nativeToken) headers.set("Authorization", `Bearer ${nativeToken}`);
+  else if (key) headers.set("X-API-Key", key);
+  else {
+    const deviceToken = getMobileDeviceToken();
+    if (deviceToken) headers.set("X-Device-Token", deviceToken);
+  }
+
   return fetch(resolveApiUrl(path), {
     ...options,
     headers,
-    credentials: "include"
+    credentials: isNativeClient() ? "omit" : "include"
   });
 }
 
 async function request<T>(path: string, options: RequestInit = {}, notifyUnauthorized = true): Promise<T> {
-  const response = await fetchLocal(path, options);
+  const method = (options.method ?? "GET").toUpperCase();
+  let response: Response;
+  try {
+    response = await fetchLocal(path, options);
+  } catch (error) {
+    if (method === "GET") {
+      const cached = await readCachedResponse<T>(path);
+      if (cached !== null) return cached;
+    }
+    throw error;
+  }
+
   if (response.status === 401 && notifyUnauthorized) {
-    clearLocalApiKey();
+    clearAllAuth();
     window.dispatchEvent(new Event(unauthorizedEvent));
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as { error?: string };
     throw new Error(body.error ?? `请求失败 (${response.status})`);
+  }
+  if (response.status === 204) return undefined as T;
+
+  const payload = await response.json() as T;
+  if (method === "GET") void writeCachedResponse(path, payload);
+  return payload;
+}
+
+async function nativeAuthRequest<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+  const response = await fetchLocal(path, {
+    method: body ? "POST" : "GET",
+    body: body ? JSON.stringify(body) : undefined
+  }, "");
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error ?? `请求失败 (${response.status})`);
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
@@ -51,6 +98,17 @@ async function request<T>(path: string, options: RequestInit = {}, notifyUnautho
 export const auth = {
   status: () => request<{ registered: boolean }>("/api/auth/status", {}, false),
   restore: async () => {
+    if (isNativeClient()) {
+      if (!getClientSessionToken()) return false;
+      try {
+        await nativeAuthRequest<{ user: { email: string } }>("/api/client-auth/session");
+        return true;
+      } catch {
+        clearClientSessionToken();
+        return false;
+      }
+    }
+
     const response = await fetchLocal("/api/auth/session");
     if (response.status === 401) {
       clearLocalApiKey();
@@ -63,11 +121,21 @@ export const auth = {
     return true;
   },
   signIn: async (email: string, password: string) => {
-    clearLocalApiKey();
+    clearAllAuth();
+    if (isNativeClient()) {
+      const result = await nativeAuthRequest<{ token: string; user: { email: string } }>("/api/client-auth/login", { email, password });
+      setClientSessionToken(result.token);
+      return;
+    }
     await request<{ user: { email: string } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, false);
   },
   register: async (email: string, password: string, inviteCode: string) => {
-    clearLocalApiKey();
+    clearAllAuth();
+    if (isNativeClient()) {
+      const result = await nativeAuthRequest<{ token: string; user: { email: string } }>("/api/client-auth/register", { email, password, inviteCode });
+      setClientSessionToken(result.token);
+      return;
+    }
     await request<{ user: { email: string } }>("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, inviteCode }) }, false);
   },
   signInWithKey: async (key: string) => {
@@ -86,9 +154,13 @@ export const auth = {
   },
   signOut: async () => {
     try {
-      await request<void>("/api/auth/logout", { method: "POST" }, false);
+      if (isNativeClient() && getClientSessionToken()) {
+        await nativeAuthRequest<void>("/api/client-auth/logout", {});
+      } else {
+        await request<void>("/api/auth/logout", { method: "POST" }, false);
+      }
     } finally {
-      clearLocalApiKey();
+      clearAllAuth();
     }
   }
 };
@@ -96,48 +168,11 @@ export const auth = {
 export type OAuthMailProvider = "google" | "microsoft";
 export type OAuthFlowStatus = { status: "pending" | "authorized" | "success" | "error"; error: string; accountId: number | null };
 
-export type AccountSyncStatus = { enabled: boolean; relayUrl: string; hasRelayToken: boolean; hasSyncKey: boolean; recoveryKey: string; configured: boolean; lastCursor: number; lastSyncAt: string | null; lastError: string | null; syncing: boolean };
-export type AccountSyncResult = { pulled: number; pushed: number; deleted: number; conflicts: number; cursor: number };
-
-export type RelayStatus = {
-  available: boolean;
-  frpVersion: string;
-  configured: boolean;
-  enabled: boolean;
-  processRunning: boolean;
-  tunnelConnected: boolean;
-  publicReachable: boolean;
-  serverAddr: string;
-  serverPort: number;
-  remotePort: number;
-  publicUrl: string;
-  hasAuthToken: boolean;
-  lastProbeAt: string | null;
-  lastProbeLatencyMs: number | null;
-  lastError: string | null;
-};
-export type RelayConfig = {
-  enabled: boolean;
-  serverAddr: string;
-  serverPort: number;
-  remotePort: number;
-  publicUrl: string;
-  authToken?: string;
-};
-
 export const api = {
   accounts: () => request<{ accounts: MailAccount[] }>("/api/accounts"),
   providers: () => request<{ providers: MailProvider[] }>("/api/providers"),
   startOAuth: (provider: OAuthMailProvider) => request<{ flowId: string; authorizationUrl: string }>(`/api/oauth/${provider}/start`, { method: "POST" }),
   oauthFlow: (flowId: string) => request<OAuthFlowStatus>(`/api/oauth/flows/${encodeURIComponent(flowId)}`),
-  accountSyncStatus: () => request<AccountSyncStatus>("/api/account-sync/status"),
-  ensureAccountSyncRecoveryKey: () => request<{ recoveryKey: string; status: AccountSyncStatus }>("/api/account-sync/recovery-key", { method: "POST" }),
-  configureAccountSync: (body: { enabled: boolean; relayUrl?: string; relayToken?: string; syncKey?: string }) => request<AccountSyncStatus>("/api/account-sync/config", { method: "PUT", body: JSON.stringify(body) }),
-  syncAccounts: () => request<AccountSyncResult>("/api/account-sync/sync", { method: "POST" }),
-  relayStatus: () => request<RelayStatus>("/api/relay/status"),
-  configureRelay: (body: RelayConfig) => request<RelayStatus>("/api/relay/config", { method: "PUT", body: JSON.stringify(body) }),
-  restartRelay: () => request<RelayStatus>("/api/relay/restart", { method: "POST" }),
-  testRelay: () => request<RelayStatus>("/api/relay/test", { method: "POST" }),
   messages: (params: URLSearchParams) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`),
   message: (id: number) => request<{ message: MailDetail }>(`/api/messages/${id}`),
   updateMessage: (id: number, actions: MessageActions) => request<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify(actions) }),
