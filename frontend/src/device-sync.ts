@@ -1,4 +1,4 @@
-import { getDeviceId } from "./client-sync";
+import { getDeviceId } from "./device-info";
 import { getClientSessionToken } from "./mobile-backend";
 
 const OPERATION_ID = "mailCollectorOperationId";
