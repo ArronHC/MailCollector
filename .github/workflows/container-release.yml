@@ -7,7 +7,14 @@ on:
       - main
     paths:
       - "package.json"
+      - "package-lock.json"
       - "Dockerfile"
+      - "src/**"
+      - "frontend/**"
+      - "migrations/**"
+      - "scripts/finalize-server-entry.mjs"
+      - "tsconfig.json"
+      - ".github/workflows/container-release.yml"
 
 permissions:
   contents: read
