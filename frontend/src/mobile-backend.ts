@@ -28,6 +28,7 @@ export function normalizeMobileBackendUrl(value: string): string {
   if (!input) throw new Error("请输入 Mail Collector VPS 地址");
   if (!/^https?:\/\//i.test(input)) input = `https://${input}`;
   const url = new URL(input);
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("VPS 地址必须使用 http:// 或 https://");
   url.hash = "";
   url.search = "";
   return url.toString().replace(/\/+$/, "");
@@ -45,13 +46,22 @@ export function setMobileBackendUrl(value: string): string {
   return normalized;
 }
 
+export function clearClientBackend(): void {
+  localStorage.removeItem(CLIENT_BACKEND_KEY);
+  localStorage.removeItem(LEGACY_MOBILE_BACKEND_KEY);
+  clearClientSessionToken();
+  clearMobileDeviceToken();
+}
+
 export function getClientSessionToken(): string {
   return localStorage.getItem(CLIENT_SESSION_KEY) ?? "";
 }
 
 export function setClientSessionToken(value: string): string {
-  localStorage.setItem(CLIENT_SESSION_KEY, value.trim());
-  return value.trim();
+  const token = value.trim();
+  if (token.length < 24) throw new Error("登录凭证无效");
+  localStorage.setItem(CLIENT_SESSION_KEY, token);
+  return token;
 }
 
 export function clearClientSessionToken(): void {
@@ -84,7 +94,22 @@ export function isUsingMobileBackend(): boolean {
 
 export async function testMobileBackend(value: string): Promise<string> {
   const backend = normalizeMobileBackendUrl(value);
-  const response = await fetch(`${backend}/api/service`, { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error(`服务器返回 ${response.status}`);
-  return backend;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${backend}/api/service`, {
+      headers: { Accept: "application/json" },
+      credentials: "omit",
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(response.status === 404 ? "该地址没有找到 Mail Collector VPS API" : `服务器返回 ${response.status}`);
+    const payload = await response.json().catch(() => null) as { service?: string } | null;
+    if (payload?.service !== "mail-collector") throw new Error("该地址不是 Mail Collector 服务");
+    return backend;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("连接 VPS 超时，请检查地址和网络");
+    throw error instanceof Error ? error : new Error("无法连接 Mail Collector VPS");
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
