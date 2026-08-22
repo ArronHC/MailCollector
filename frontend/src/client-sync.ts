@@ -1,4 +1,7 @@
-const REVISION_KEY = "mailCollectorSyncRevision";
+import { getMobileBackendUrl } from "./mobile-backend";
+
+const REVISION_KEY_PREFIX = "mailCollectorSyncRevision";
+const LEGACY_REVISION_KEY = REVISION_KEY_PREFIX;
 
 export type SyncEvent = {
   revision: number;
@@ -16,16 +19,25 @@ export type SyncPullResult = {
   events: SyncEvent[];
 };
 
+function revisionKey(): string {
+  const backend = getMobileBackendUrl() || window.location.origin;
+  return `${REVISION_KEY_PREFIX}:${encodeURIComponent(backend)}`;
+}
+
 export function getSyncRevision(): number {
-  const revision = Number(localStorage.getItem(REVISION_KEY) ?? "0");
+  // Never migrate the legacy global cursor automatically: it may belong to a
+  // different VPS. Replaying from revision 0 is safe; skipping revisions is not.
+  localStorage.removeItem(LEGACY_REVISION_KEY);
+  const revision = Number(localStorage.getItem(revisionKey()) ?? "0");
   return Number.isFinite(revision) && revision >= 0 ? Math.floor(revision) : 0;
 }
 
 export function setSyncRevision(revision: number): void {
   if (!Number.isFinite(revision) || revision < 0) return;
-  localStorage.setItem(REVISION_KEY, String(Math.max(Math.floor(revision), getSyncRevision())));
+  localStorage.setItem(revisionKey(), String(Math.max(Math.floor(revision), getSyncRevision())));
 }
 
 export function resetSyncRevision(): void {
-  localStorage.removeItem(REVISION_KEY);
+  localStorage.removeItem(revisionKey());
+  localStorage.removeItem(LEGACY_REVISION_KEY);
 }
