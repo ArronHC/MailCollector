@@ -166,6 +166,10 @@ async function flushOutbox(): Promise<{ flushed: number; pending: number }> {
   return { flushed, pending: pendingClientOperationCount() };
 }
 
+function onlineMessageMutation<T>(path: string, method: "PATCH" | "POST", body: unknown): Promise<T> {
+  return request<T>(path, { method, body: JSON.stringify(body) });
+}
+
 export const auth = {
   status: async () => {
     try {
@@ -263,22 +267,26 @@ export const api = {
   oauthFlow: (flowId: string) => request<OAuthFlowStatus>(`/api/oauth/flows/${encodeURIComponent(flowId)}`),
   messages: (params: URLSearchParams) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`),
   message: (id: number) => request<{ message: MailDetail }>(`/api/messages/${id}`),
-  updateMessage: (id: number, actions: MessageActions) => queueableMutation<{ ok: true; message: MailDetail }>(
-    `/api/messages/${id}`,
-    "PATCH",
-    actions,
-    async () => {
-      const cached = await findCachedMessageById<MailDetail>(id);
-      if (!cached) throw new Error("操作已离线保存；此邮件尚无本地详情缓存");
-      return { ok: true, message: { ...cached, ...actions } as MailDetail };
-    }
-  ),
-  bulkMessages: (ids: number[], actions: MessageActions) => queueableMutation<{ ok: true; updated: number; missingIds: number[] }>(
-    "/api/messages/bulk",
-    "POST",
-    { ids, ...actions },
-    async () => ({ ok: true, updated: ids.length, missingIds: [] })
-  ),
+  updateMessage: (id: number, actions: MessageActions) => actions.labels !== undefined
+    ? onlineMessageMutation<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, "PATCH", actions)
+    : queueableMutation<{ ok: true; message: MailDetail }>(
+      `/api/messages/${id}`,
+      "PATCH",
+      actions,
+      async () => {
+        const cached = await findCachedMessageById<MailDetail>(id);
+        if (!cached) throw new Error("操作已离线保存；此邮件尚无本地详情缓存");
+        return { ok: true, message: { ...cached, ...actions } as MailDetail };
+      }
+    ),
+  bulkMessages: (ids: number[], actions: MessageActions) => actions.labels !== undefined
+    ? onlineMessageMutation<{ ok: true; updated: number; missingIds: number[] }>("/api/messages/bulk", "POST", { ids, ...actions })
+    : queueableMutation<{ ok: true; updated: number; missingIds: number[] }>(
+      "/api/messages/bulk",
+      "POST",
+      { ids, ...actions },
+      async () => ({ ok: true, updated: ids.length, missingIds: [] })
+    ),
   deleteMessage: (id: number) => queueableMutation<void>(`/api/messages/${id}`, "DELETE", undefined, async () => undefined),
   syncAll: () => request<{ ok: boolean; succeeded: unknown[]; failed: unknown[] }>("/api/sync", { method: "POST" }),
   syncAccount: (id: number) => request<unknown>(`/api/accounts/${id}/sync`, { method: "POST" }),
