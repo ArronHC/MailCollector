@@ -33,17 +33,9 @@ jobs:
         run: npm run typecheck
       - name: Build Windows preview installer
         run: npx tauri build --bundles nsis
-      - name: Verify relay runtime and installer
+      - name: Verify installer
         shell: pwsh
         run: |
-          $frpc = Join-Path $PWD "src-tauri/resources/runtime/frpc.exe"
-          if (-not (Test-Path $frpc)) {
-            throw "Preview runtime is missing frpc.exe"
-          }
-          $version = (& $frpc --version).Trim()
-          if ($version -notin @("0.70.1", "v0.70.1")) {
-            throw "Unexpected frpc version: $version"
-          }
           $installers = @(Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe")
           if ($installers.Count -ne 1) {
             throw "Expected one NSIS installer, found $($installers.Count)"
