@@ -2,6 +2,7 @@ import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailPr
 import { readCachedResponse, writeCachedResponse } from "./client-cache";
 import {
   clearClientSessionToken,
+  clearMobileDeviceToken,
   getClientSessionToken,
   getMobileDeviceToken,
   isNativeClient,
@@ -33,6 +34,7 @@ function clearLocalApiKey() {
 function clearAllAuth() {
   clearLocalApiKey();
   clearClientSessionToken();
+  clearMobileDeviceToken();
 }
 
 async function fetchLocal(path: string, options: RequestInit = {}, key = localApiKey): Promise<Response> {
@@ -96,16 +98,29 @@ async function nativeAuthRequest<T>(path: string, body?: Record<string, unknown>
 }
 
 export const auth = {
-  status: () => request<{ registered: boolean }>("/api/auth/status", {}, false),
+  status: async () => {
+    try {
+      return await request<{ registered: boolean }>("/api/auth/status", {}, false);
+    } catch (error) {
+      if (isNativeClient() && getClientSessionToken()) return { registered: true };
+      throw error;
+    }
+  },
   restore: async () => {
     if (isNativeClient()) {
       if (!getClientSessionToken()) return false;
       try {
-        await nativeAuthRequest<{ user: { email: string } }>("/api/client-auth/session");
+        const response = await fetchLocal("/api/client-auth/session", {}, "");
+        if (response.status === 401) {
+          clearClientSessionToken();
+          return false;
+        }
+        if (!response.ok) return true;
         return true;
       } catch {
-        clearClientSessionToken();
-        return false;
+        // A previously authenticated native client remains usable in read-only
+        // offline mode. Cached GET data is served by request() until VPS returns.
+        return Boolean(getClientSessionToken());
       }
     }
 
