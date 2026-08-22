@@ -46,7 +46,7 @@ jobs:
           Copy-Item -LiteralPath $installers[0].FullName -Destination $target
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant()
           "$hash  $name" | Set-Content -Encoding ascii "$target.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: preview-release-windows
           path: release-assets/*
@@ -87,7 +87,7 @@ jobs:
           cp android/app/build/outputs/apk/debug/app-debug.apk "release-assets/${NAME}"
           cd release-assets
           sha256sum "${NAME}" > "${NAME}.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: preview-release-android
           path: release-assets/*
