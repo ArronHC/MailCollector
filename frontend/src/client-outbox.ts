@@ -2,7 +2,7 @@ const OUTBOX_KEY = "mailCollectorSyncOutbox";
 
 export type PendingClientOperation = {
   id: string;
-  method: "PATCH" | "POST";
+  method: "PATCH" | "POST" | "DELETE";
   path: string;
   body?: unknown;
   createdAt: string;
@@ -64,15 +64,22 @@ function statePatch(body: unknown): MessageStatePatch {
     ...(typeof source.isRead === "boolean" ? { isRead: source.isRead } : {}),
     ...(typeof source.isStarred === "boolean" ? { isStarred: source.isStarred } : {}),
     ...(typeof source.folder === "string" ? { folder: source.folder } : {}),
-    ...(source.snoozedUntil === null || typeof source.snoozedUntil === "string" ? { snoozedUntil: source.snoozedUntil as string | null } : {})
+    ...(source.snoozedUntil === null || typeof source.snoozedUntil === "string"
+      ? { snoozedUntil: source.snoozedUntil as string | null }
+      : {})
   };
 }
 
-function pendingPatches(): Map<number, MessageStatePatch> {
+function pendingState(): { patches: Map<number, MessageStatePatch>; deletedIds: Set<number> } {
   const patches = new Map<number, MessageStatePatch>();
+  const deletedIds = new Set<number>();
   for (const operation of load()) {
     const single = operation.path.match(/^\/api\/messages\/(\d+)$/);
-    if (operation.method === "PATCH" && single) {
+    if (single && operation.method === "DELETE") {
+      deletedIds.add(Number(single[1]));
+      continue;
+    }
+    if (single && operation.method === "PATCH") {
       const id = Number(single[1]);
       patches.set(id, { ...patches.get(id), ...statePatch(operation.body) });
       continue;
@@ -84,7 +91,7 @@ function pendingPatches(): Map<number, MessageStatePatch> {
       for (const id of ids) patches.set(id, { ...patches.get(id), ...patch });
     }
   }
-  return patches;
+  return { patches, deletedIds };
 }
 
 function applyPatch<T extends Record<string, unknown>>(message: T, patches: Map<number, MessageStatePatch>): T {
@@ -94,14 +101,16 @@ function applyPatch<T extends Record<string, unknown>>(message: T, patches: Map<
 }
 
 export function applyPendingClientOperations<T>(path: string, value: T): T {
-  const patches = pendingPatches();
-  if (!patches.size || !value || typeof value !== "object") return value;
+  const { patches, deletedIds } = pendingState();
+  if ((!patches.size && !deletedIds.size) || !value || typeof value !== "object") return value;
   const result = value as Record<string, unknown>;
 
   if (Array.isArray(result.messages)) {
-    let messages = result.messages.map((message) => message && typeof message === "object"
-      ? applyPatch(message as Record<string, unknown>, patches)
-      : message);
+    let messages = result.messages
+      .filter((message) => !message || typeof message !== "object" || !deletedIds.has(Number((message as Record<string, unknown>).id)))
+      .map((message) => message && typeof message === "object"
+        ? applyPatch(message as Record<string, unknown>, patches)
+        : message);
     const query = path.includes("?") ? new URLSearchParams(path.slice(path.indexOf("?") + 1)) : null;
     const view = query?.get("view");
     if (view === "inbox" || view === "archive" || view === "trash" || view === "spam") {
@@ -111,6 +120,8 @@ export function applyPendingClientOperations<T>(path: string, value: T): T {
   }
 
   if (result.message && typeof result.message === "object") {
+    const id = Number((result.message as Record<string, unknown>).id);
+    if (deletedIds.has(id)) return value;
     return { ...result, message: applyPatch(result.message as Record<string, unknown>, patches) } as T;
   }
 
