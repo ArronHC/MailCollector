@@ -1,14 +1,15 @@
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions } from "./data/mailData";
 import { readCachedResponse, writeCachedResponse } from "./client-cache";
 import { deviceHeaders } from "./device-info";
+import { applyPendingClientOperations } from "./client-outbox";
+import { getSyncRevision, setSyncRevision } from "./client-sync";
 import { clearClientSessionToken, clearMobileDeviceToken, getClientSessionToken, getMobileDeviceToken, isNativeClient, resolveApiUrl, setClientSessionToken } from "./mobile-backend";
-import { enqueueClientOperation, pendingClientOperations, removeClientOperation } from "./client-outbox";
 
 const legacyApiKey = "mailCollectorApiKey";
 const localApiKeyKey = "mailCollectorApiKey:local";
 const localRememberedKey = "mailCollectorRememberedApiKey:local";
 
-function loadLocalApiKey(): string {
+function loadLocalApiKey() {
   return sessionStorage.getItem(localApiKeyKey) ?? localStorage.getItem(localRememberedKey) ?? sessionStorage.getItem(legacyApiKey) ?? "";
 }
 
@@ -32,16 +33,11 @@ async function fetchLocal(path: string, options: RequestInit = {}, key = localAp
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
   if (options.body) headers.set("Content-Type", "application/json");
-  if (isNativeClient()) {
-    for (const [name, value] of Object.entries(deviceHeaders())) headers.set(name, value);
-  }
-  const nativeToken = getClientSessionToken();
-  if (nativeToken) headers.set("Authorization", `Bearer ${nativeToken}`);
+  if (isNativeClient()) Object.entries(deviceHeaders()).forEach(([name, value]) => headers.set(name, value));
+  const token = getClientSessionToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
   else if (key) headers.set("X-API-Key", key);
-  else {
-    const deviceToken = getMobileDeviceToken();
-    if (deviceToken) headers.set("X-Device-Token", deviceToken);
-  }
+  else if (getMobileDeviceToken()) headers.set("X-Device-Token", getMobileDeviceToken());
   return fetch(resolveApiUrl(path), { ...options, headers, credentials: isNativeClient() ? "omit" : "include" });
 }
 
@@ -56,68 +52,22 @@ async function request<T>(path: string, options: RequestInit = {}, notifyUnautho
     if (!response.ok) throw new Error(((await response.json().catch(() => ({}))) as { error?: string }).error ?? `请求失败 (${response.status})`);
     const payload = response.status === 204 ? undefined as T : await response.json() as T;
     if (method === "GET") void writeCachedResponse(path, payload);
-    return payload;
+    return method === "GET" ? applyPendingClientOperations(path, payload) : payload;
   } catch (error) {
-    if (method === "GET") {
-      const cached = await readCachedResponse<T>(path);
-      if (cached !== null) return cached;
-    }
+    const cached = method === "GET" ? await readCachedResponse<T>(path) : null;
+    if (cached !== null) return applyPendingClientOperations(path, cached);
     throw error;
   }
 }
 
-async function nativeAuthRequest<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  const response = await fetchLocal(path, { method: body ? "POST" : "GET", body: body ? JSON.stringify(body) : undefined }, "");
-  if (!response.ok) throw new Error(((await response.json().catch(() => ({}))) as { error?: string }).error ?? "认证失败");
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
-}
-
-async function flushOutbox(): Promise<void> {
-  for (const operation of pendingClientOperations()) {
-    try {
-      const response = await fetchLocal(operation.path, {
-        method: operation.method,
-        headers: { "X-Operation-ID": operation.id },
-        body: operation.body ? JSON.stringify(operation.body) : undefined
-      });
-      if (response.ok) removeClientOperation(operation.id);
-    } catch {
-      return;
-    }
-  }
-}
-
-export const auth = {
-  status: async () => request<{ registered: boolean }>("/api/auth/status", {}, false),
-  restore: async () => {
-    if (!isNativeClient() || !getClientSessionToken()) return false;
-    try { return (await nativeAuthRequest<{ user: { email: string } }>("/api/client-auth/session")).user.email.length > 0; } catch { return true; }
-  },
-  signIn: async (email: string, password: string) => {
-    clearAllAuth();
-    if (isNativeClient()) {
-      const result = await nativeAuthRequest<{ token: string }>("/api/client-auth/login", { email, password });
-      setClientSessionToken(result.token);
-      await flushOutbox();
-      return;
-    }
-    await request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, false);
-  },
-  register: async (email: string, password: string, inviteCode: string) => {
-    clearAllAuth();
-    if (isNativeClient()) {
-      const result = await nativeAuthRequest<{ token: string }>("/api/client-auth/register", { email, password, inviteCode });
-      setClientSessionToken(result.token);
-      return;
-    }
-    await request("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, inviteCode }) }, false);
-  },
-  signOut: async () => {
-    try { if (isNativeClient()) await nativeAuthRequest<void>("/api/client-auth/logout", {}); else await request<void>("/api/auth/logout", { method: "POST" }, false); } finally { clearAllAuth(); }
-  }
-};
-
 export const api = {
+  devices: () => request<{ devices: Array<{ id: string; name: string; platform: "windows" | "android" | "web"; lastSeenAt: string; lastSyncRevision: number }> }>("/api/devices"),
+  removeDevice: (id: string) => request<{ revoked: boolean }>(`/api/devices/${id}`, { method: "DELETE" }),
+  syncPull: async () => {
+    const result = await request<{ revision: number; events: unknown[] }>(`/api/sync/pull?after=${getSyncRevision()}`);
+    setSyncRevision(result.revision);
+    return result;
+  },
   accounts: () => request<{ accounts: MailAccount[] }>("/api/accounts"),
   providers: () => request<{ providers: MailProvider[] }>("/api/providers"),
   messages: (params: URLSearchParams) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`),
@@ -125,6 +75,11 @@ export const api = {
   updateMessage: (id: number, actions: MessageActions) => request<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, { method: "PATCH", body: JSON.stringify(actions) }),
   bulkMessages: (ids: number[], actions: MessageActions) => request<{ ok: true; updated: number; missingIds: number[] }>("/api/messages/bulk", { method: "POST", body: JSON.stringify({ ids, ...actions }) }),
   deleteMessage: (id: number) => request<void>(`/api/messages/${id}`, { method: "DELETE" }),
-  syncPull: () => request<unknown>("/api/sync/pull?after=0"),
-  flushOutbox
+  syncAll: () => request<{ ok: boolean; succeeded: unknown[]; failed: unknown[] }>("/api/sync", { method: "POST" }),
+  syncAccount: (id: number) => request<unknown>(`/api/accounts/${id}/sync`, { method: "POST" }),
+  labels: () => request<{ labels: MailLabel[] }>("/api/labels"),
+  createLabel: (name: string) => request<{ label: MailLabel }>("/api/labels", { method: "POST", body: JSON.stringify({ name }) }),
+  createDraft: (content: DraftContent) => request<{ draft: MailDetail }>("/api/drafts", { method: "POST", body: JSON.stringify(content) }),
+  updateDraft: (id: number, content: Omit<DraftContent, "accountId">) => request<{ draft: MailDetail }>(`/api/drafts/${id}`, { method: "PATCH", body: JSON.stringify(content) }),
+  send: (content: DraftContent) => request<{ message: MailDetail }>("/api/send", { method: "POST", body: JSON.stringify(content) })
 };
