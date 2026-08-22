@@ -1,5 +1,9 @@
 import "dotenv/config";
 import path from "node:path";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const packageVersion = ((require("../package.json") as { version?: string }).version ?? "").trim();
 
 function integer(name: string, fallback: number): number {
   const value = Number(process.env[name] ?? fallback);
@@ -51,7 +55,7 @@ export const config = {
   databasePath: path.resolve(process.env.DATABASE_PATH ?? "./data/mail-collector.db"),
   encryptionKey: encryptionKey(),
   apiKey: requiredApiKey(),
-  serviceVersion: process.env.MAIL_COLLECTOR_VERSION?.trim() || "0.5.1",
+  serviceVersion: process.env.MAIL_COLLECTOR_VERSION?.trim() || packageVersion || "unknown",
   registrationInviteCode: requiredInviteCode(),
   allowPrivateMailHosts: boolean("ALLOW_PRIVATE_MAIL_HOSTS", false),
   googleOauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "",
