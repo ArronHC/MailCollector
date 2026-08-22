@@ -22,7 +22,7 @@
     "better-sqlite3": "^12.2.0",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
-    "imapflow": "^1.0.190",
+    "imapflow": "^1.7.1",
     "lucide-react": "^0.468.0",
     "mailparser": "^3.7.4",
     "nodemailer": "^9.0.5",
@@ -44,7 +44,7 @@
     "@tauri-apps/cli": "^2.11.4",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.17",
-    "tsx": "^4.20.3",
+    "tsx": "^4.23.12",
     "typescript": "^5.9.2",
     "vite": "^8.2.1"
   }
