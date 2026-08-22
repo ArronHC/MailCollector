@@ -9,6 +9,7 @@ on:
       - "package.json"
       - "src-tauri/tauri.conf.json"
       - "src-tauri/Cargo.toml"
+      - "frontend/**"
 
 permissions:
   contents: write
@@ -18,8 +19,6 @@ jobs:
     runs-on: windows-2022
     env:
       npm_config_msvs_version: "2022"
-      GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
-      MICROSOFT_OAUTH_CLIENT_ID: ${{ vars.MICROSOFT_OAUTH_CLIENT_ID }}
       WINDOWS_SIGNING_MODE: ${{ vars.WINDOWS_SIGNING_MODE }}
       WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
       WINDOWS_TIMESTAMP_TSP: ${{ vars.WINDOWS_TIMESTAMP_TSP }}
@@ -67,7 +66,7 @@ jobs:
         if: env.WINDOWS_SIGNING_MODE == '' || env.WINDOWS_SIGNING_MODE == 'none'
         shell: pwsh
         run: |
-          Write-Warning "Building an unsigned Windows release. Windows/SmartScreen may display publisher or reputation warnings."
+          Write-Warning "Building an unsigned Windows client release. Windows/SmartScreen may display publisher or reputation warnings."
           npx tauri build --bundles nsis
       - name: Generate installer SHA-256 checksum
         shell: pwsh
