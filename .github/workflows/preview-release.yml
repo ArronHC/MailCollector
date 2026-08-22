@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 env:
-  RELEASE_TAG: v0.10.1-vps-core-preview.1
+  RELEASE_TAG: v0.11.0-vps-core-preview.1
 
 jobs:
   windows:
@@ -109,12 +109,12 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Mail Collector VPS Core Preview 1
+          name: Mail Collector 0.11.0 VPS Core Preview 1
           prerelease: true
           make_latest: false
           generate_release_notes: false
           body: |
-            Equal-client VPS Core preview.
+            Equal-client VPS Core preview for Mail Collector 0.11.0.
 
             Architecture:
             - VPS is the long-running IMAP/SMTP/OAuth sync core.
