@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
-import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, Server, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
-import { Modal } from "./Ui";
+import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, Server, ShieldCheck, SlidersHorizontal, Trash2, Users, X } from "lucide-react";
 import { clearClientBackend, getMobileBackendUrl, isNativeClient } from "../mobile-backend";
 import { resetAppSettings, untrustRemoteImageSender, updateAppSettings, useAppSettings } from "../settings";
+import { DeviceManager } from "./DeviceManager";
+import { Modal } from "./Ui";
 
 function SettingRow({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
   return <div className="setting-row"><div><strong>{title}</strong><span>{detail}</span></div><div className="setting-control">{children}</div></div>;
@@ -40,10 +41,16 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         <SettingRow title="启用快捷键" detail="支持 J/K、E、S、U、R、C、/ 和 Esc。"><input type="checkbox" checked={settings.keyboardShortcutsEnabled} onChange={(event) => updateAppSettings({ keyboardShortcutsEnabled: event.target.checked })} /></SettingRow>
       </section>
 
-      {nativeClient ? <section className="settings-section">
-        <header><Server /><div><h3>同步服务器</h3><p>电脑和手机地位相同，都直接连接 VPS；邮件阅读数据会在本机缓存。</p></div></header>
-        <SettingRow title="当前 VPS" detail={backend || "尚未配置"}><button type="button" onClick={changeServer}>更换服务器</button></SettingRow>
-      </section> : null}
+      {nativeClient ? <>
+        <section className="settings-section">
+          <header><Server /><div><h3>同步服务器</h3><p>电脑和手机地位相同，都直接连接 VPS；邮件阅读数据会在本机缓存。</p></div></header>
+          <SettingRow title="当前 VPS" detail={backend || "尚未配置"}><button type="button" onClick={changeServer}>更换服务器</button></SettingRow>
+        </section>
+        <section className="settings-section">
+          <header><Users /><div><h3>设备管理</h3><p>查看登录过当前账号的 Windows 与 Android 客户端，并可撤销旧设备。</p></div></header>
+          <DeviceManager />
+        </section>
+      </> : null}
 
       <section className="settings-section compact-section">
         <header><ShieldCheck /><div><h3>隐私</h3><p>远程图片仍通过现有 CSP 隔离策略加载，不会放开脚本、表单或网络请求。</p></div></header>

@@ -15,6 +15,11 @@ function cacheKey(path: string): string {
   return `${backend}|${path}`;
 }
 
+function cachePrefix(): string {
+  const backend = getMobileBackendUrl() || window.location.origin;
+  return `${backend}|`;
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
@@ -40,6 +45,51 @@ export async function readCachedResponse<T>(path: string): Promise<T | null> {
       request.onerror = () => reject(request.error ?? new Error("读取本地邮件缓存失败"));
       transaction.oncomplete = () => database.close();
       transaction.onabort = () => database.close();
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function findCachedMessageById<T extends { id: number }>(id: number): Promise<T | null> {
+  if (!("indexedDB" in window)) return null;
+  try {
+    const database = await openDatabase();
+    return await new Promise<T | null>((resolve) => {
+      const transaction = database.transaction(STORE_NAME, "readonly");
+      const request = transaction.objectStore(STORE_NAME).openCursor();
+      const prefix = cachePrefix();
+      let found: T | null = null;
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor || found) return;
+        const record = cursor.value as CacheRecord<unknown>;
+        if (!record.key.startsWith(prefix)) {
+          cursor.continue();
+          return;
+        }
+        const value = record.value as { message?: unknown; messages?: unknown[] } | null;
+        if (value?.message && typeof value.message === "object" && (value.message as { id?: unknown }).id === id) {
+          found = value.message as T;
+          return;
+        }
+        if (Array.isArray(value?.messages)) {
+          const match = value.messages.find((item) => item && typeof item === "object" && (item as { id?: unknown }).id === id);
+          if (match) {
+            found = match as T;
+            return;
+          }
+        }
+        cursor.continue();
+      };
+      transaction.oncomplete = () => {
+        database.close();
+        resolve(found);
+      };
+      transaction.onerror = transaction.onabort = () => {
+        database.close();
+        resolve(found);
+      };
     });
   } catch {
     return null;
