@@ -4,28 +4,6 @@ $ErrorActionPreference = "Stop"
 $errors = [System.Collections.Generic.List[string]]::new()
 $warnings = [System.Collections.Generic.List[string]]::new()
 
-function Require-Value([string]$Name, [string]$Value) {
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        $errors.Add("Missing required setting: $Name")
-        return $false
-    }
-    return $true
-}
-
-function Looks-Like-ClientId([string]$Name, [string]$Value) {
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return
-    }
-    if ($Value.Length -lt 20) {
-        $warnings.Add("$Name looks unusually short; verify the registered OAuth client ID")
-    }
-}
-
-$googleReady = Require-Value "GOOGLE_OAUTH_CLIENT_ID" $env:GOOGLE_OAUTH_CLIENT_ID
-$microsoftReady = Require-Value "MICROSOFT_OAUTH_CLIENT_ID" $env:MICROSOFT_OAUTH_CLIENT_ID
-if ($googleReady) { Looks-Like-ClientId "GOOGLE_OAUTH_CLIENT_ID" $env:GOOGLE_OAUTH_CLIENT_ID }
-if ($microsoftReady) { Looks-Like-ClientId "MICROSOFT_OAUTH_CLIENT_ID" $env:MICROSOFT_OAUTH_CLIENT_ID }
-
 $mode = ($env:WINDOWS_SIGNING_MODE ?? "none").Trim().ToLowerInvariant()
 if ([string]::IsNullOrWhiteSpace($mode)) { $mode = "none" }
 if ($mode -notin @("none", "azure", "pfx", "auto")) {
@@ -74,8 +52,8 @@ $signingSummary = if ($mode -eq "none") {
 }
 
 Write-Host "Release readiness summary"
-Write-Host "  Google OAuth:    $(if ($googleReady) { 'configured' } else { 'missing' })"
-Write-Host "  Microsoft OAuth: $(if ($microsoftReady) { 'configured' } else { 'missing' })"
+Write-Host "  Architecture:    native client -> VPS Core"
+Write-Host "  OAuth settings:  configured on VPS, not embedded in Windows"
 Write-Host "  Windows signing: $signingSummary"
 
 foreach ($warning in $warnings) {
