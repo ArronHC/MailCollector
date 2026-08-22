@@ -1,0 +1,28 @@
+.device-manager { display: grid; gap: 10px; }
+.device-manager-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.device-manager-toolbar > span { color: #7c8580; font-size: 10px; }
+.device-refresh { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid #e0e3dc; border-radius: 9px; color: var(--accent); background: #fbfbf8; font-size: 10px; cursor: pointer; }
+.device-refresh:disabled { opacity: .55; cursor: default; }
+.device-refresh svg { width: 13px; height: 13px; }
+.device-list { display: grid; gap: 7px; }
+.device-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 58px; padding: 9px 10px; border: 1px solid #eceee8; border-radius: 12px; background: #fbfbf8; }
+.device-row.current { border-color: rgba(23,107,87,.22); background: var(--accent-soft); }
+.device-icon { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 10px; color: var(--accent); background: #fff; }
+.device-icon svg { width: 16px; height: 16px; }
+.device-copy { min-width: 0; }
+.device-name-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.device-name-line strong { overflow: hidden; color: #344139; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.device-copy > span, .device-copy > small { display: block; margin-top: 2px; color: #858d87; font-size: 9px; line-height: 1.4; }
+.device-current-badge { flex: 0 0 auto; margin: 0; padding: 2px 6px; border-radius: 999px; color: var(--accent); background: rgba(23,107,87,.1); font-size: 9px; }
+.device-current-note { margin: 0; color: var(--accent); font-size: 9px; }
+.device-remove { display: grid; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 9px; place-items: center; color: #8a918c; background: transparent; cursor: pointer; }
+.device-remove:hover { color: var(--danger); background: #f6e9e6; }
+.device-remove:disabled { opacity: .45; cursor: default; }
+.device-remove svg { width: 14px; height: 14px; }
+.device-manager-error { padding: 8px 10px; border-radius: 9px; color: var(--danger); background: #f8ece9; font-size: 10px; }
+.device-manager-empty { padding: 8px 2px; color: #929992; font-size: 10px; }
+
+@media (max-width: 560px) {
+  .device-row { grid-template-columns: 32px minmax(0, 1fr) auto; padding: 9px 8px; }
+  .device-current-note { display: none; }
+}
