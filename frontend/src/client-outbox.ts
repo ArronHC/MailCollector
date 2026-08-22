@@ -2,7 +2,7 @@ const OUTBOX_KEY = "mailCollectorSyncOutbox";
 
 export type PendingClientOperation = {
   id: string;
-  method: string;
+  method: "PATCH" | "POST";
   path: string;
   body?: unknown;
   createdAt: string;
@@ -10,7 +10,8 @@ export type PendingClientOperation = {
 
 function load(): PendingClientOperation[] {
   try {
-    return JSON.parse(localStorage.getItem(OUTBOX_KEY) ?? "[]") as PendingClientOperation[];
+    const parsed = JSON.parse(localStorage.getItem(OUTBOX_KEY) ?? "[]") as PendingClientOperation[];
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
@@ -20,11 +21,14 @@ function save(items: PendingClientOperation[]): void {
   localStorage.setItem(OUTBOX_KEY, JSON.stringify(items.slice(-500)));
 }
 
-export function enqueueClientOperation(operation: Omit<PendingClientOperation, "id" | "createdAt">): PendingClientOperation {
+export function enqueueClientOperation(
+  operation: Omit<PendingClientOperation, "createdAt"> & { createdAt?: string }
+): PendingClientOperation {
+  const existing = load().find((item) => item.id === operation.id);
+  if (existing) return existing;
   const item: PendingClientOperation = {
-    id: crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
-    ...operation
+    ...operation,
+    createdAt: operation.createdAt ?? new Date().toISOString()
   };
   save([...load(), item]);
   return item;
@@ -40,4 +44,8 @@ export function removeClientOperation(id: string): void {
 
 export function clearClientOperations(): void {
   localStorage.removeItem(OUTBOX_KEY);
+}
+
+export function pendingClientOperationCount(): number {
+  return load().length;
 }
