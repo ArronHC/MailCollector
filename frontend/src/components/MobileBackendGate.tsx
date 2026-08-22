@@ -1,10 +1,16 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { getMobileBackendUrl, isNativeMobile, setMobileBackendUrl, testMobileBackend } from "../mobile-backend";
+import {
+  getMobileBackendUrl,
+  isNativeClient,
+  setMobileBackendUrl,
+  testMobileBackend
+} from "../mobile-backend";
 
 export function MobileBackendGate({ children }: { children: ReactNode }) {
-  const nativeMobile = useMemo(() => isNativeMobile(), []);
-  const [configured, setConfigured] = useState(() => !nativeMobile || Boolean(getMobileBackendUrl()));
+  const nativeClient = useMemo(() => isNativeClient(), []);
+  const [configured, setConfigured] = useState(() => !nativeClient || Boolean(getMobileBackendUrl()));
   const [url, setUrl] = useState(() => getMobileBackendUrl());
+  const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(false);
 
@@ -14,12 +20,15 @@ export function MobileBackendGate({ children }: { children: ReactNode }) {
     event.preventDefault();
     setChecking(true);
     setError("");
+    setStatus("正在连接 VPS…");
     try {
       const backend = await testMobileBackend(url);
       setMobileBackendUrl(backend);
+      setStatus("连接成功");
       setConfigured(true);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "无法连接 Mail Collector 服务");
+      setError(reason instanceof Error ? reason.message : "无法连接 Mail Collector VPS");
+      setStatus("");
     } finally {
       setChecking(false);
     }
@@ -29,9 +38,9 @@ export function MobileBackendGate({ children }: { children: ReactNode }) {
     <form className="mobile-backend-card" onSubmit={submit}>
       <div className="mobile-backend-logo">M</div>
       <h1>连接 Mail Collector</h1>
-      <p>手机版需要连接一台正在运行 Mail Collector 服务的电脑或服务器。</p>
+      <p>电脑和手机都是独立客户端。请输入长期在线的 VPS Mail Collector 地址，两端都会直接从这里同步邮箱状态。</p>
       <label>
-        <span>服务地址</span>
+        <span>VPS 地址</span>
         <input
           autoCapitalize="none"
           autoCorrect="off"
@@ -42,9 +51,12 @@ export function MobileBackendGate({ children }: { children: ReactNode }) {
           disabled={checking}
         />
       </label>
+      {status ? <div className="mobile-backend-status">{status}</div> : null}
       {error ? <div className="mobile-backend-error">{error}</div> : null}
-      <button type="submit" disabled={checking || !url.trim()}>{checking ? "正在连接…" : "连接并进入邮箱"}</button>
-      <small>也支持局域网地址，例如 http://192.168.1.10:3000</small>
+      <button type="submit" disabled={checking || !url.trim()}>
+        {checking ? "正在连接…" : "连接 VPS"}
+      </button>
+      <small>推荐使用 HTTPS。客户端会在本地缓存最近读取过的邮件，VPS 负责与邮件服务商持续同步。</small>
     </form>
   </main>;
 }

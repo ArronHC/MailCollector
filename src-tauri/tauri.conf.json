@@ -1,16 +1,26 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Mail Collector",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "identifier": "com.openspace.mailcollector",
   "build": {
-    "beforeDevCommand": "npm run build:desktop",
-    "beforeBuildCommand": "npm run build:desktop",
+    "beforeDevCommand": "npm run build:web",
+    "beforeBuildCommand": "npm run build:web",
     "frontendDist": "../public"
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [],
+    "windows": [
+      {
+        "label": "main",
+        "title": "Mail Collector",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 980,
+        "minHeight": 680,
+        "decorations": false
+      }
+    ],
     "security": {
       "capabilities": ["default"],
       "csp": null
@@ -19,7 +29,6 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "resources": ["resources/runtime/**/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

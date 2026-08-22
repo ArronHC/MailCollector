@@ -1,0 +1,133 @@
+name: VPS Core Preview Release
+
+on:
+  push:
+    branches:
+      - feature/device-pairing-sync-v2
+    paths:
+      - ".github/workflows/preview-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: v0.11.0-vps-core-preview.1
+
+jobs:
+  windows:
+    name: Build Windows client
+    runs-on: windows-2022
+    env:
+      npm_config_msvs_version: "2022"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build unsigned Windows installer
+        run: npx tauri build --bundles nsis
+      - name: Stage Windows installer
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe")
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+          }
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          $name = "MailCollector-Windows-$env:RELEASE_TAG-x64-setup.exe"
+          $target = Join-Path $PWD "release-assets/$name"
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $target
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content -Encoding ascii "$target.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-release-windows
+          path: release-assets/*
+          if-no-files-found: error
+
+  android:
+    name: Build Android client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build:web
+      - name: Install Capacitor Android tooling
+        run: |
+          npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8
+          npx cap add android || true
+      - name: Sync Android project
+        run: npx cap sync android
+      - name: Build Android APK
+        run: |
+          cd android
+          ./gradlew assembleDebug
+      - name: Stage Android APK
+        run: |
+          mkdir -p release-assets
+          NAME="MailCollector-Android-${RELEASE_TAG}-debug.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "release-assets/${NAME}"
+          cd release-assets
+          sha256sum "${NAME}" > "${NAME}.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-release-android
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub prerelease
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: preview-release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Mail Collector 0.11.0 VPS Core Preview 1
+          prerelease: true
+          make_latest: false
+          generate_release_notes: false
+          body: |
+            Equal-client VPS Core preview for Mail Collector 0.11.0.
+
+            Architecture:
+            - VPS is the long-running IMAP/SMTP/OAuth sync core.
+            - Windows and Android are equal clients and connect directly over HTTPS.
+            - Both clients maintain local read caches for recently accessed mail data.
+            - Windows no longer bundles a Node mail sidecar or FRP.
+            - Android no longer requires a desktop-generated pairing code or a running PC.
+
+            Included:
+            - Windows x64 NSIS client installer
+            - Android debug APK
+            - SHA-256 checksum files
+
+            See README.md for VPS deployment and migration instructions.
+          files: release-assets/*
+          fail_on_unmatched_files: true

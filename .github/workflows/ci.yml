@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   node:
     name: Node checks
@@ -16,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -24,7 +28,7 @@ jobs:
       - run: npm run build
 
   rust:
-    name: Rust and desktop runtime checks
+    name: Rust desktop client checks
     runs-on: windows-2022
     env:
       npm_config_msvs_version: "2022"
@@ -35,14 +39,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - name: Install application dependencies
         run: npm ci --prefix ..
-      - name: Prepare and smoke-test desktop runtime
+      - name: Build client frontend
         run: npm run build:desktop --prefix ..
       - name: Validate Windows release scripts
         shell: pwsh

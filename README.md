@@ -1,148 +1,268 @@
-# 收信台 Mail Collector
+# Mail Collector
 
-一个本地优先、面向单用户的多邮箱聚合客户端。
+Mail Collector 是一个自建的多邮箱聚合客户端。当前架构以 **VPS 作为长期在线的邮件同步核心**，Windows 和 Android 是地位相同的客户端。
 
-Mail Collector 在每台设备上直接连接 IMAP/SMTP，邮件正文、索引、草稿和标签均保存在本机。多台设备各自连接邮箱服务商，已读和星标等已写回服务端的状态通过邮箱服务商自然收敛，不需要自建任何服务器。
-
-[下载最新 Windows 客户端](https://github.com/ArronHC/MailCollector/releases/latest)
-
-## 介绍
-
-### 为什么使用 Mail Collector
-
-- 在一个界面中查看 Gmail、Outlook、iCloud、QQ、163、126 和其他标准 IMAP 邮箱。
-- 邮件数据留在自己的设备，不依赖第三方邮件聚合服务。
-- 多台设备可以各自连接同一邮箱；已读和星标等服务端状态会通过邮箱服务商同步。
-- 同时支持 Windows 桌面客户端和浏览器开发模式，桌面版无需单独安装 Node.js。
-
-### 工作方式
+## 架构
 
 ```text
-┌─────────────────────────── 设备 A ──────────────────────────────┐
-│ React 界面 + 本地 Node sidecar + SQLite                         │
-│ 邮件、正文、草稿、标签、索引和本机加密后的邮箱凭据               │
-└───────────────┬─────────────────────────────────────────────────┘
-                │ IMAP / SMTP
-                ▼
-           邮箱服务商
-                ▲
-                │ IMAP / SMTP
-┌───────────────┴─────────────────────────────────────────────────┐
-│ React 界面 + 本地 Node sidecar + SQLite                         │
-│ 邮件、正文、草稿、标签、索引和本机加密后的邮箱凭据               │
-└─────────────────────────── 设备 B ──────────────────────────────┘
+Gmail / Outlook / QQ / 163 / IMAP
+                 │
+                 │ IMAP / SMTP / OAuth
+                 ▼
+          VPS Mail Collector
+      同步调度 · 账户凭据 · API
+                 │
+          HTTPS  │
+        ┌────────┴────────┐
+        ▼                 ▼
+  Windows Client     Android Client
+  本地邮件缓存        本地邮件缓存
+  独立登录            独立登录
 ```
 
-每台设备独立连接邮箱服务商并保存邮件。当前只有已读和星标状态会写回 IMAP 并在设备间自然同步；归档、移动、垃圾箱、垃圾邮件、本地标签、草稿和稍后提醒目前保持本机语义。
+核心原则：
 
-### 已实现功能
+- Windows 和 Android 都不依赖另一台设备在线。
+- 两端都直接连接同一个 VPS。
+- 邮件服务商只由 VPS 负责同步，避免每台设备都建立一套 IMAP IDLE/轮询连接。
+- 客户端会把已经读取的账户、邮件列表、邮件正文和标签数据缓存到本地，网络不可用时可回读最近缓存。
+- VPS 保留同步所需的服务端数据库和加密凭据，是设备之间的一致性来源。
+- Windows 安装包不再内置 Node 邮件服务、SQLite 邮件主库或 FRP。
+- 不再需要“电脑批准手机”或“VPS FRP Relay”才能使用 Android。
 
-- 多个标准 IMAP 邮箱账户与统一收件箱。
-- Gmail、Outlook、iCloud、QQ、163、126 常见服务器预设。
-- 添加账户前测试 IMAP 连接。
-- 首次同步最近邮件，之后按 UID 增量同步并分页回填历史邮件。
-- 持久化校验 IMAP UIDVALIDITY，UID 空间变化时安全重建本地数据。
-- 聚合列表、按账户筛选、发件人和主题搜索、正文阅读。
-- 已读和星标状态写回 IMAP，并支持星标筛选。
-- 收件箱、归档、垃圾箱、垃圾邮件、稍后提醒、草稿和已发送视图。
-- 默认标签、自定义标签、批量整理和本地规则自动分类。
-- 本地草稿与 SMTP 发送，发送成功后保存本地已发送副本。
-- 定时同步、手动同步、IMAP IDLE 和 NOOP fallback。
-- 超大或解析失败邮件保留元数据占位，不阻塞后续同步。
-- AES-256-GCM 加密保存邮箱密码或授权码。
-- 沙箱与 CSP 隔离邮件 HTML，禁止脚本和表单，并默认阻止远程 HTTP/HTTPS 内容以降低跟踪像素泄露风险。
+旧的 `v0.10.1-vps-relay-preview.1` 架构仍可作为历史版本使用，但它要求 Windows 在线；新架构不再使用该依赖关系。
 
-### 技术栈
+## VPS 部署
 
-| 部分 | 技术 |
-| --- | --- |
-| 界面 | React 19、TypeScript、Tailwind CSS、Vite |
-| 桌面 | Tauri 2、Rust、系统 WebView2 |
-| 本地邮件引擎 | Node.js、Express、ImapFlow、Nodemailer、MailParser |
-| 数据 | SQLite、better-sqlite3 |
+推荐使用 Docker，并在前面放 Nginx、Caddy 或 Nginx Proxy Manager 提供 HTTPS。
 
-### 当前边界
-
-- 当前定位是单用户、本地优先客户端，不提供多租户隔离。
-- 目前正式打包目标为 Windows；浏览器模式主要用于本地开发，并未提供 Android/iOS 客户端。
-- Gmail 和 Microsoft 账户暂时通过通用 IMAP 连接，尚未接入 OAuth 2.0、Gmail History API 或 Microsoft Graph。
-- 移动、归档、垃圾箱、垃圾邮件、标签、稍后提醒和永久删除保持本地语义；已读和星标状态通过 operation outbox 异步写回 IMAP。
-- 邮件正文按需下载并缓存。附件数据可能随 MIME 正文传输，但当前版本不保存附件内容，也不提供附件下载。
-- 自定义 IMAP 主机默认不能解析到回环、私网、链路本地或保留地址。
-
-## 客户端
-
-### 下载与安装
-
-Windows 用户可从 [Releases](https://github.com/ArronHC/MailCollector/releases/latest) 下载最新的 `Mail.Collector_*_x64-setup.exe`。
-
-桌面版使用当前用户安装模式，运行时包含邮件引擎所需的 Node sidecar。安装后无需另行启动后端服务。
-
-本地数据库、密钥和客户端连接设置保存在当前 Windows 用户的应用数据目录中，不会写入安装包。
-
-### 多设备使用
-
-- 邮箱连接配置和邮件数据都只保存在当前设备。
-- 每台设备需要各自添加一次邮箱账户。
-- 当前已读和星标状态通过邮箱服务商自然同步；归档、移动、本地标签、草稿和稍后提醒不跨设备。
-
-### 邮箱准备
-
-- Gmail：开启两步验证并创建应用专用密码，普通登录密码通常不能用于 IMAP。
-- Outlook / Microsoft 365：部分租户已禁用密码式 IMAP，这类账户需要等待 OAuth 2.0 支持。
-- iCloud：在 Apple ID 中创建 App 专用密码。
-- QQ / 163 / 126：在邮箱设置中开启 IMAP，并使用生成的授权码。
-- 自建邮箱：填写服务商提供的 IMAP 主机、端口和 TLS 设置。
-
-SMTP 会根据已知 IMAP 主机选择安全参数：Gmail、QQ、163、126 使用 465 TLS，Outlook 和 iCloud 使用 587 STARTTLS。无法识别的自定义主机默认拒绝发送，避免错误地向未知 SMTP 端点提交凭据。
-
-### 本地开发
-
-要求 Node.js 20 或更高版本。
-
-```bash
-npm install
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
+### 1. 准备环境变量
 
 复制 `.env.example` 为 `.env`，至少设置：
 
 ```env
-ENCRYPTION_KEY=<64 位十六进制字符串>
-API_KEY=<至少 24 个字符的随机字符串>
-REGISTRATION_INVITE_CODE=<至少 12 个字符的私密邀请码>
+ENCRYPTION_KEY=<64 位十六进制随机值>
+API_KEY=<长随机值>
+REGISTRATION_INVITE_CODE=<首次注册邀请码>
+OAUTH_REDIRECT_BASE_URL=https://mail.example.com/
 ```
 
-分别启动本地后端和 Vite：
+生成随机值可以使用：
 
 ```bash
-npm run dev
-npm run dev:web
+openssl rand -hex 32
 ```
 
-开发界面位于 <http://localhost:5173>，API 请求会代理到 <http://127.0.0.1:3000>。
+`ENCRYPTION_KEY` 一旦投入使用不要随意更换，否则已有加密邮箱凭据将无法读取。
 
-生产构建和测试：
+### 2. Docker Compose 示例
+
+```yaml
+services:
+  mail-collector:
+    image: ghcr.io/arronhc/mailcollector:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:8080:8080"
+```
+
+如果自行从源码构建：
 
 ```bash
-npm run build
+docker build -t mail-collector .
+docker run -d \
+  --name mail-collector \
+  --restart unless-stopped \
+  --env-file .env \
+  -v "$PWD/data:/app/data" \
+  -p 127.0.0.1:8080:8080 \
+  mail-collector
+```
+
+### 3. HTTPS 反向代理
+
+公网只需要暴露 HTTPS。反向代理目标指向：
+
+```text
+http://127.0.0.1:8080
+```
+
+例如最终地址：
+
+```text
+https://mail.example.com
+```
+
+客户端首次启动时填写这个地址即可。
+
+不再需要：
+
+- frps
+- frpc
+- 7000 端口
+- 23001 端口
+- Windows 公网穿透
+
+## 首次注册与登录
+
+VPS 第一次启动后还没有管理员账户。
+
+Windows 或 Android 第一次连接 VPS 时：
+
+1. 填写 `https://mail.example.com`。
+2. 进入注册界面。
+3. 输入邮箱、密码和 `.env` 中的 `REGISTRATION_INVITE_CODE`。
+4. 注册成功后，该客户端会得到独立的登录 session token。
+5. 另一台设备直接连接同一个 VPS 并使用同一账户登录即可。
+
+原生客户端使用 Bearer session，不依赖跨域 Cookie，因此 Windows 和 Android 的认证模型一致。
+
+## 添加邮箱
+
+### Gmail
+
+推荐 OAuth。
+
+由于 OAuth 现在发生在 VPS，请在 Google Cloud 中把 Mail Collector 的 HTTPS 回调地址注册为允许的 redirect URI，并把 Client ID 填入：
+
+```env
+GOOGLE_OAUTH_CLIENT_ID=...
+OAUTH_REDIRECT_BASE_URL=https://mail.example.com/
+```
+
+也可以使用 Google 支持的应用专用密码方式连接 IMAP/SMTP。
+
+### Outlook / Microsoft 365
+
+推荐 OAuth：
+
+```env
+MICROSOFT_OAUTH_CLIENT_ID=...
+OAUTH_REDIRECT_BASE_URL=https://mail.example.com/
+```
+
+Microsoft 应用注册中需要允许对应 redirect URI 和 IMAP/SMTP delegated scopes。
+
+### QQ / 163 / 126 / iCloud
+
+先在邮件服务商后台开启 IMAP/SMTP，并使用服务商生成的授权码或 App 专用密码。
+
+## 客户端缓存
+
+Windows 和 Android 使用相同的前端缓存层。
+
+当前缓存策略：
+
+- 账户列表：本地缓存
+- 标签：本地缓存
+- 邮件列表：按查询条件缓存
+- 已打开的邮件正文：本地缓存
+- 在线读取成功后自动刷新缓存
+- 网络请求失败时，GET 请求会尝试返回最近一次本地缓存
+
+缓存只是客户端副本，不是新的同步主库。已读、星标、移动、删除、发信等修改操作仍提交到 VPS，再由 VPS 同邮件服务商同步。
+
+## Windows 客户端
+
+Windows 现在是纯客户端：
+
+```text
+Tauri
+  └─ React UI
+       ├─ HTTPS → VPS
+       └─ IndexedDB 本地缓存
+```
+
+安装包不再启动本地 Node sidecar，也不会因为关闭 Windows 导致 Android 离线。
+
+## Android 客户端
+
+Android 与 Windows 使用同一套 API、认证和缓存逻辑：
+
+```text
+Capacitor
+  └─ React UI
+       ├─ HTTPS → VPS
+       └─ 本地 WebView / IndexedDB 缓存
+```
+
+首次启动只需要填写 VPS 地址并登录，不再输入电脑生成的 6 位配对码。
+
+## 开发
+
+安装依赖：
+
+```bash
+npm ci
+```
+
+类型检查：
+
+```bash
 npm run typecheck
+```
+
+测试：
+
+```bash
 npm test
 ```
 
-构建 Windows 安装包还需要 Rust 工具链和 WebView2：
+构建 VPS 服务和 Web：
+
+```bash
+npm run build
+```
+
+运行 VPS 服务：
+
+```bash
+npm start
+```
+
+开发 Web：
+
+```bash
+npm run dev:web
+```
+
+构建 Windows：
 
 ```bash
 npm run dist:win
 ```
 
-安装包输出到 `src-tauri/target/release/bundle/nsis/`。
+## 数据与安全
 
-### 客户端安全说明
+VPS 的 `data` 目录需要持久化和备份，其中包含：
 
-- `ENCRYPTION_KEY` 用于加密本机数据库中的邮箱密码或授权码，丢失后无法恢复已有凭据。
-- `API_KEY` 用于接口认证，长度至少为 24 个字符。
-- 本地管理员密码使用 `scrypt` 加盐慢哈希保存，会话 Cookie 使用 HttpOnly 和 SameSite=Strict。
-- 只应在可信个人设备上选择记住 API Key。
-- 邮件 HTML 在沙箱 iframe 中显示；远程 HTTP/HTTPS 图片、字体、媒体和子框架默认被 CSP 阻止，脚本和表单同样被禁止。
-- 如需连接私网 IMAP 服务，可显式设置 `ALLOW_PRIVATE_MAIL_HOSTS=true`，但应先确认目标地址可信。
+- SQLite 同步数据库
+- 加密后的邮箱账户信息
+- OAuth refresh token 加密存储
+- 邮件同步状态
+
+不要公开 `API_KEY`、`ENCRYPTION_KEY` 或注册邀请码。
+
+原生客户端只保存自己的登录 session 和本地邮件缓存，不保存 VPS 的主 API Key。
+
+## 从旧 VPS Relay 预览版迁移
+
+旧架构：
+
+```text
+Android → HTTPS → VPS/frps → Windows/frpc → Windows sidecar
+```
+
+新架构：
+
+```text
+Windows ─┐
+         ├→ HTTPS → VPS Mail Collector → 邮件服务商
+Android ─┘
+```
+
+迁移时保留旧 Windows 数据作为备份，然后在 VPS 部署新的服务端数据目录并重新连接邮箱。确认 VPS 同步正常后，再让 Windows 和 Android 都指向新的 HTTPS 地址。
