@@ -1,9 +1,6 @@
-import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, Server, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Modal } from "./Ui";
-import { AccountSyncSettings } from "./AccountSyncSettings";
-import { DevicePairingSettings } from "./DevicePairingSettings";
-import { VpsRelaySettings } from "./VpsRelaySettings";
-import { isNativeMobile } from "../mobile-backend";
+import { clearClientBackend, getMobileBackendUrl, isNativeClient } from "../mobile-backend";
 import { resetAppSettings, untrustRemoteImageSender, updateAppSettings, useAppSettings } from "../settings";
 
 function SettingRow({ title, detail, children }: { title: string; detail: string; children: React.ReactNode }) {
@@ -12,7 +9,14 @@ function SettingRow({ title, detail, children }: { title: string; detail: string
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const settings = useAppSettings();
-  const nativeMobile = isNativeMobile();
+  const nativeClient = isNativeClient();
+  const backend = getMobileBackendUrl();
+
+  function changeServer() {
+    clearClientBackend();
+    window.location.reload();
+  }
+
   return <Modal open={open} title="设置" onClose={onClose} className="settings-modal">
     <div className="settings-shell">
       <section className="settings-section">
@@ -35,13 +39,15 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         <SettingRow title="启用快捷键" detail="支持 J/K、E、S、U、R、C、/ 和 Esc。"><input type="checkbox" checked={settings.keyboardShortcutsEnabled} onChange={(event) => updateAppSettings({ keyboardShortcutsEnabled: event.target.checked })} /></SettingRow>
       </section>
 
-      <AccountSyncSettings />
-      {!nativeMobile ? <><VpsRelaySettings /><DevicePairingSettings /></> : null}
+      {nativeClient ? <section className="settings-section">
+        <header><Server /><div><h3>同步服务器</h3><p>电脑和手机地位相同，都直接连接 VPS；邮件阅读数据会在本机缓存。</p></div></header>
+        <SettingRow title="当前 VPS" detail={backend || "尚未配置"}><button type="button" onClick={changeServer}>更换服务器</button></SettingRow>
+      </section> : null}
 
       <section className="settings-section compact-section">
         <header><ShieldCheck /><div><h3>隐私</h3><p>远程图片仍通过现有 CSP 隔离策略加载，不会放开脚本、表单或网络请求。</p></div></header>
         <div className="trusted-summary"><SlidersHorizontal /><span>已信任 {settings.trustedRemoteImageSenders.length} 个远程图片发件人</span>{settings.trustedRemoteImageSenders.length ? <button type="button" onClick={() => updateAppSettings({ trustedRemoteImageSenders: [] })}><Trash2 />全部清除</button> : null}</div>
-        {settings.trustedRemoteImageSenders.length ? <div className="trusted-sender-list">{settings.trustedRemoteImageSenders.map((sender) => <div key={sender}><span title={sender}>{sender}</span><button type="button" onClick={() => untrustRemoteImageSender(sender)} aria-label={`不再信任 ${sender}`} title="不再自动显示图片"><X /></button></div>)}</div> : <p className="trusted-empty">当你在邮件正文中选择“始终显示此发件人的图片”后，会在这里管理。</p>}
+        {settings.trustedRemoteImageSenders.length ? <div className="trusted-sender-list">{settings.trustedRemoteImageSenders.map((sender) => <div key={sender}><span title={sender}>{sender}</span><button type="button" onClick={() => untrustRemoteImageSender(sender)} aria-label={`不再信任 ${sender}`} title="不再自动显示图片"><X /></button></div> : <p className="trusted-empty">当你在邮件正文中选择“始终显示此发件人的图片”后，会在这里管理。</p>}
       </section>
 
       <footer className="settings-footer"><button onClick={() => resetAppSettings()}><RotateCcw />恢复默认设置</button><button className="primary-action" onClick={onClose}>完成</button></footer>
