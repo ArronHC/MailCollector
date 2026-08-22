@@ -239,7 +239,8 @@ export class ClientSyncStore {
       ORDER BY revision ASC
       LIMIT ?
     `).all(userId, after, Math.max(1, Math.min(limit, 500))) as EventRow[];
-    const revision = rows.length ? rows[rows.length - 1].revision : this.currentRevision(userId);
+    const lastRow = rows.at(-1);
+    const revision = lastRow?.revision ?? this.currentRevision(userId);
     this.ack(userId, deviceId, revision);
     return { revision, events: rows.map((row) => this.mapEvent(row)) };
   }
