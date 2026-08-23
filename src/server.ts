@@ -11,7 +11,7 @@ import { MailDatabase } from "./database.js";
 import { ImapMailSyncer } from "./imap-syncer.js";
 import { ImapIdleService } from "./imap-idle-service.js";
 import { MailWorker } from "./mail-worker.js";
-import { OAuthManager, type OAuthMailProvider } from "./oauth.js";
+import { OAuthManager, type OAuthCredential, type OAuthMailProvider } from "./oauth.js";
 import { providers } from "./providers.js";
 import { SmtpSender } from "./smtp-sender.js";
 import { SyncService } from "./sync-service.js";
@@ -79,6 +79,17 @@ const registrationSchema = z.object({
   inviteCode: z.string().trim().min(1).max(200)
 });
 const loginSchema = z.object({ email: emailSchema, password: passwordSchema });
+const oauthCredentialImportSchema = z.object({
+  version: z.literal(1),
+  provider: z.enum(["google", "microsoft"]),
+  email: z.email().max(320),
+  displayName: z.string().trim().max(320),
+  clientId: z.string().trim().min(3).max(512).refine((value) => !/\s/.test(value), "Client ID 不能包含空白字符"),
+  accessToken: z.string().min(1).max(16_000),
+  refreshToken: z.string().min(1).max(16_000),
+  expiresAt: z.number().int().nonnegative(),
+  scope: z.string().max(8_000)
+});
 const accountSyncConfigSchema = z.object({
   enabled: z.boolean(),
   relayUrl: z.string().trim().max(2048).optional(),
@@ -218,6 +229,68 @@ function oauthAccountPreset(provider: OAuthMailProvider) {
     : { name: "Outlook", host: "outlook.office365.com", port: 993, secure: true, provider: "microsoft" as const };
 }
 
+async function createOAuthAccount(credential: OAuthCredential) {
+  if (database.listAccounts().some((account) => account.email.toLowerCase() === credential.email.toLowerCase())) {
+    throw Object.assign(new Error("该邮箱已经添加"), { status: 409 });
+  }
+  const preset = oauthAccountPreset(credential.provider);
+  const syncId = crypto.randomUUID();
+  const syncUpdatedAt = new Date().toISOString();
+  const candidate = {
+    id: 0,
+    syncId,
+    syncUpdatedAt,
+    name: preset.name,
+    email: credential.email,
+    host: preset.host,
+    port: preset.port,
+    secure: preset.secure,
+    username: credential.email,
+    encryptedPassword: oauthManager.marker(credential.provider),
+    mailbox: "INBOX",
+    provider: preset.provider,
+    enabled: true,
+    uidValidity: null,
+    lastUid: 0,
+    lastSyncAt: null,
+    lastSuccessfulSyncAt: null,
+    lastReconcileAt: null,
+    lastEventAt: null,
+    lastError: null,
+    syncErrorCount: 0,
+    syncState: "idle" as const,
+    nextSyncAt: null,
+    backfillCursor: null,
+    backfillStatus: "pending" as const,
+    createdAt: syncUpdatedAt
+  };
+
+  oauthManager.saveCredential(syncId, credential);
+  try {
+    await syncer.testConnection(candidate);
+    const account = database.createAccount({
+      syncId: candidate.syncId,
+      syncUpdatedAt: candidate.syncUpdatedAt,
+      name: candidate.name,
+      email: candidate.email,
+      host: candidate.host,
+      port: candidate.port,
+      secure: candidate.secure,
+      username: candidate.username,
+      encryptedPassword: candidate.encryptedPassword,
+      mailbox: candidate.mailbox,
+      provider: candidate.provider,
+      enabled: candidate.enabled
+    });
+    database.enqueueJob(account.id, "initial", 1, "oauth_account_created");
+    idleService?.refresh();
+    return account;
+  } catch (error) {
+    oauthManager.deleteCredential(syncId);
+    throw error;
+  }
+}
+
 function bearerToken(request: express.Request): string {
   const authorization = request.header("authorization") ?? "";
   return authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
@@ -297,67 +370,13 @@ app.get("/", async (request, response, next) => {
   }
 
   let flowId = "";
-  let syncId = "";
   try {
     const completed = await oauthManager.completeCallback(state, code, providerError, providerErrorDescription);
     flowId = completed.flowId;
-    const credential = completed.credential;
-    if (database.listAccounts().some((account) => account.email.toLowerCase() === credential.email.toLowerCase())) {
-      throw Object.assign(new Error("该邮箱已经添加"), { status: 409 });
-    }
-    const preset = oauthAccountPreset(credential.provider);
-    syncId = crypto.randomUUID();
-    const syncUpdatedAt = new Date().toISOString();
-    oauthManager.saveCredential(syncId, credential);
-    const candidate = {
-      id: 0,
-      syncId,
-      syncUpdatedAt,
-      name: preset.name,
-      email: credential.email,
-      host: preset.host,
-      port: preset.port,
-      secure: preset.secure,
-      username: credential.email,
-      encryptedPassword: oauthManager.marker(credential.provider),
-      mailbox: "INBOX",
-      provider: preset.provider,
-      enabled: true,
-      uidValidity: null,
-      lastUid: 0,
-      lastSyncAt: null,
-      lastSuccessfulSyncAt: null,
-      lastReconcileAt: null,
-      lastEventAt: null,
-      lastError: null,
-      syncErrorCount: 0,
-      syncState: "idle" as const,
-      nextSyncAt: null,
-      backfillCursor: null,
-      backfillStatus: "pending" as const,
-      createdAt: syncUpdatedAt
-    };
-    await syncer.testConnection(candidate);
-    const account = database.createAccount({
-      syncId: candidate.syncId,
-      syncUpdatedAt: candidate.syncUpdatedAt,
-      name: candidate.name,
-      email: candidate.email,
-      host: candidate.host,
-      port: candidate.port,
-      secure: candidate.secure,
-      username: candidate.username,
-      encryptedPassword: candidate.encryptedPassword,
-      mailbox: candidate.mailbox,
-      provider: candidate.provider,
-      enabled: candidate.enabled
-    });
-    database.enqueueJob(account.id, "initial", 1, "oauth_account_created");
-    idleService?.refresh();
+    const account = await createOAuthAccount(completed.credential);
     oauthManager.markFlowSuccess(flowId, account.id);
     response.type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Mail Collector</title><style>body{font-family:system-ui;margin:48px;line-height:1.6;color:#1f2937}main{max-width:560px;margin:auto}h1{font-size:24px}</style><main><h1>邮箱已连接</h1><p>授权完成，可以关闭这个浏览器页面并返回 Mail Collector。</p></main>");
   } catch (error) {
-    if (syncId) oauthManager.deleteCredential(syncId);
     const message = error instanceof Error ? error.message : "OAuth 授权失败";
     if (flowId) oauthManager.markFlowError(flowId, message);
     const status = Number((error as { status?: number }).status ?? 400);
@@ -459,6 +478,16 @@ app.post("/api/oauth/:provider/start", (request, response, next) => {
   try {
     const provider = z.enum(["google", "microsoft"]).parse(request.params.provider);
     response.json(oauthManager.start(provider));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/oauth/import", async (request, response, next) => {
+  try {
+    const credential = oauthCredentialImportSchema.parse(request.body) as OAuthCredential;
+    const account = await createOAuthAccount(credential);
+    response.status(201).json({ account: database.listPublicAccounts(syncService.syncingIds).find((item) => item.id === account.id) });
   } catch (error) {
     next(error);
   }

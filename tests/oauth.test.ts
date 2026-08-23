@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { OAuthManager } from "../src/oauth.js";
+import { OAuthManager, type OAuthCredential } from "../src/oauth.js";
 import type { MailAccount } from "../src/types.js";
 
 function manager(googleClientId = "google-public-client", microsoftClientId = "microsoft-public-client") {
@@ -67,4 +67,37 @@ test("OAuth is disabled cleanly when a provider client ID is not configured", ()
     const value = error as Error & { status?: number };
     return value.status === 503 && /Google OAuth Client ID/.test(value.message);
   });
+});
+
+test("VPS refreshes an imported OAuth credential with its per-account Client ID", async () => {
+  const oauth = manager("", "");
+  const syncId = crypto.randomUUID();
+  const credential: OAuthCredential = {
+    version: 1,
+    provider: "google",
+    email: "arron@example.com",
+    displayName: "Arron",
+    clientId: "desktop-client.apps.googleusercontent.com",
+    accessToken: "",
+    refreshToken: "refresh-secret",
+    expiresAt: 0,
+    scope: "openid email https://mail.google.com/"
+  };
+  oauth.saveCredential(syncId, credential);
+  const account = { syncId, encryptedPassword: oauth.marker("google") } as MailAccount;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => {
+    const body = init?.body as URLSearchParams;
+    assert.equal(body.get("client_id"), credential.clientId);
+    assert.equal(body.get("refresh_token"), credential.refreshToken);
+    return new Response(JSON.stringify({ access_token: "refreshed-access", expires_in: 3600 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  };
+  try {
+    assert.equal(await oauth.accessToken(account), "refreshed-access");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

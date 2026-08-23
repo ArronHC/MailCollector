@@ -13,6 +13,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "allow-open-external-url",
+    "allow-authorize-mail-provider",
     "allow-install-update"
   ]
 }

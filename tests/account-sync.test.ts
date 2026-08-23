@@ -37,6 +37,7 @@ function samplePayload(): AccountSyncPayload {
       provider: "google",
       email: "arron@example.com",
       displayName: "Arron",
+      clientId: "google-public-client.apps.googleusercontent.com",
       refreshToken: "refresh-secret",
       scope: "openid email https://mail.google.com/"
     }

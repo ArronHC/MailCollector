@@ -12,7 +12,7 @@ Mail Collector supports OAuth-first account setup for Gmail and Outlook / Micros
 
 `https://mail.google.com/` is a Google restricted scope and covers IMAP/SMTP access. A public production app using this scope must complete restricted-scope verification unless it qualifies for an exception, and Google can require recurring security assessment/reverification for restricted-scope access. Plan this as an operational/compliance dependency rather than only a client-ID setup step.
 
-Desktop builds use a loopback redirect on the local Mail Collector service and open the authorization page in the system browser. Do not add a client secret to the desktop app.
+Windows builds use a random loopback redirect handled by the Tauri process and open the authorization page in the system browser. Do not add a client secret to the desktop app.
 
 ## Microsoft / Outlook
 
@@ -27,27 +27,25 @@ Desktop builds use a loopback redirect on the local Mail Collector service and o
 
 The desktop callback uses an ephemeral localhost port. Microsoft treats the port component of a localhost native-app redirect as dynamic.
 
-## GitHub release builds
+## Configure the Windows client
 
-Create these repository **Variables** (not Secrets; OAuth public-client IDs are not confidential):
+Open **Settings → Mail OAuth** in Mail Collector and enter the values shown as **Google Client ID** and **Microsoft Client ID**.
 
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `MICROSOFT_OAUTH_CLIENT_ID`
+The values are public identifiers and are stored only in that Windows profile's local application settings. They are not embedded into a release and do not need to be configured on Android or in the VPS `.env` file.
 
-The Windows release workflow exposes the variables while compiling the Tauri app. The client IDs are embedded as public configuration and are passed to the bundled local mail service at runtime.
+If either value is absent, that provider's OAuth button is disabled and the application-password fallback remains available.
 
-If either variable is absent, that provider's OAuth button is disabled and the UI keeps the application-password fallback available.
+## Credential handoff to the VPS
 
-## Local and container development
+After Windows completes Authorization Code + PKCE locally, it sends the resulting credential through the authenticated HTTPS API to the configured VPS. The VPS:
 
-Set the same values in the environment or `.env` file:
+- verifies the access token by opening the provider IMAP connection before creating the account;
+- encrypts the refresh/access tokens and per-account public Client ID at rest;
+- refreshes access tokens with the Client ID stored alongside that account;
+- owns the long-running IMAP/SMTP synchronization, so Windows can go offline;
+- exposes the synchronized account and mail data to both Windows and Android clients.
 
-```env
-GOOGLE_OAUTH_CLIENT_ID=...
-MICROSOFT_OAUTH_CLIENT_ID=...
-```
-
-For a hosted browser deployment, set `OAUTH_REDIRECT_BASE_URL` to the externally reachable callback base URL. Desktop builds normally leave it unset so the local loopback callback is used.
+Android does not receive provider OAuth tokens or Client IDs. It only uses its Mail Collector session to read and update VPS data. The optional server environment Client IDs and `OAUTH_REDIRECT_BASE_URL` remain only as a legacy hosted-browser fallback.
 
 ## Token storage
 

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircle, X } from "lucide-react";
-import { api, type OAuthMailProvider } from "../api";
+import { api, type DesktopOAuthCredential, type OAuthMailProvider } from "../api";
 import type { MailAccount, MailProvider } from "../data/mailData";
+import { isNativeDesktop } from "../mobile-backend";
+import { useAppSettings } from "../settings";
 import { usePresence } from "./Ui";
 
 interface AccountForm {
@@ -52,6 +54,7 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
   const [manualMode, setManualMode] = useState(false);
   const [oauthBusy, setOauthBusy] = useState(false);
   const [oauthError, setOauthError] = useState("");
+  const settings = useAppSettings();
   const presence = usePresence(open, 200);
   const dialogRef = useRef<HTMLElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -63,14 +66,21 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
 
   const selectedProvider = providers.find((provider) => provider.id === form.provider);
   const oauthProvider = selectedProvider?.oauthProvider ?? null;
-  const oauthAvailable = Boolean(oauthProvider && selectedProvider?.oauthAvailable);
+  const desktopClientId = oauthProvider === "google" ? settings.googleOAuthClientId : oauthProvider === "microsoft" ? settings.microsoftOAuthClientId : "";
+  const oauthAvailable = Boolean(oauthProvider && (isNativeDesktop() ? desktopClientId : selectedProvider?.oauthAvailable));
+
+  function providerOAuthAvailable(provider: MailProvider): boolean {
+    if (!provider.oauthProvider) return false;
+    if (!isNativeDesktop()) return Boolean(provider.oauthAvailable);
+    return Boolean(provider.oauthProvider === "google" ? settings.googleOAuthClientId : settings.microsoftOAuthClientId);
+  }
 
   useEffect(() => {
     if (open && providers.length && !providers.some((provider) => provider.id === form.provider)) {
       const provider = providers[0];
       if (provider) {
         setForm({ ...emptyForm, provider: provider.id, name: provider.name, host: provider.host, port: provider.port, secure: provider.secure });
-        setManualMode(!provider.oauthAvailable);
+        setManualMode(!providerOAuthAvailable(provider));
       }
     }
   }, [open, providers, form.provider]);
@@ -126,7 +136,7 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
     const provider = providers.find((item) => item.id === id);
     if (provider) {
       setForm((current) => ({ ...current, provider: id, name: provider.id === "custom" ? current.name : provider.name.split(" /")[0] || provider.name, host: provider.host, port: provider.port, secure: provider.secure }));
-      setManualMode(!provider.oauthAvailable);
+      setManualMode(!providerOAuthAvailable(provider));
       setOauthError("");
     }
   }
@@ -149,6 +159,14 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
     setOauthBusy(true);
     setOauthError("");
     try {
+      if (isNativeDesktop()) {
+        if (!desktopClientId) throw new Error("请先在设置 → 邮箱 OAuth 中填写此服务商的 Client ID");
+        const credential = await invoke<DesktopOAuthCredential>("authorize_mail_provider", { provider, clientId: desktopClientId });
+        if (oauthAttemptRef.current !== attempt) return;
+        await api.importOAuth(credential);
+        window.location.reload();
+        return;
+      }
       const { flowId, authorizationUrl } = await api.startOAuth(provider);
       await openAuthorizationUrl(authorizationUrl);
       for (let index = 0; index < 300; index += 1) {
@@ -180,7 +198,7 @@ export function AccountDialog({ open, providers, accounts, busy, error, onClose,
 
           {oauthProvider ? <div className="account-help">
             <strong>推荐：OAuth 安全登录</strong>
-            <p>{oauthAvailable ? "不会把邮箱密码交给 Mail Collector；授权会在系统浏览器中完成，并使用可撤销的 OAuth 令牌连接 IMAP/SMTP。" : "当前构建尚未配置此服务商的 OAuth Client ID，可暂时使用应用密码 / 授权码。"}</p>
+            <p>{oauthAvailable ? "不会把邮箱密码交给 Mail Collector；授权会在系统浏览器中完成，并使用可撤销的 OAuth 令牌连接 IMAP/SMTP。" : isNativeDesktop() ? "请先在设置 → 邮箱 OAuth 中填写此服务商的 Client ID，或暂时使用应用密码 / 授权码。" : "这台设备不负责首次 OAuth 授权；请先在 Windows 客户端添加邮箱，之后账户和邮件会通过 VPS 同步到这里。"}</p>
             <div className="managed-account-actions">
               <button type="button" className="dialog-primary" disabled={busy || oauthBusy || !oauthAvailable} onClick={() => { if (oauthProvider) void connectOAuth(oauthProvider); }}>{oauthBusy ? <><LoaderCircle className="spinning" />等待浏览器授权</> : oauthButtonLabel(oauthProvider)}</button>
               {oauthAvailable ? <button type="button" disabled={busy || oauthBusy} onClick={() => setManualMode((value) => !value)}>{manualMode ? "返回 OAuth 登录" : "改用应用密码"}</button> : null}

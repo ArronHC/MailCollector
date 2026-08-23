@@ -83,7 +83,7 @@ On the new device:
 
 The device downloads account configuration, re-encrypts passwords/OAuth credentials with its own local `ENCRYPTION_KEY`, creates local account rows while keeping runtime state local, and starts its own initial IMAP synchronization.
 
-For Gmail or Microsoft OAuth accounts, the new device must also have the corresponding `GOOGLE_OAUTH_CLIENT_ID` or `MICROSOFT_OAUTH_CLIENT_ID` configured. Official Windows builds embed the repository OAuth client IDs; self-hosted web/container deployments should configure them in the environment.
+For legacy encrypted-relay records, the public OAuth Client ID now travels inside the encrypted account payload together with the refresh credential. A receiving runtime no longer needs a matching global `GOOGLE_OAUTH_CLIENT_ID` or `MICROSOFT_OAUTH_CLIENT_ID` setting.
 
 ## Conflicts and deletes
 
