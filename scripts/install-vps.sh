@@ -139,6 +139,8 @@ PY
 install_docker
 mkdir -p "$APP_DIR/data" "$APP_DIR/caddy-data" "$APP_DIR/caddy-config"
 chmod 700 "$APP_DIR"
+chown -R 1000:1000 "$APP_DIR/data"
+chmod 700 "$APP_DIR/data"
 
 port_in_use() {
   local port="$1"
@@ -333,7 +335,8 @@ cat > "$MANAGE_FILE" <<'MANAGE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_PATH="$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")"
+APP_DIR="$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
 ENV_FILE="$APP_DIR/.env"
 OVERRIDE_FILE="$APP_DIR/compose.mailcollector-proxy.yaml"
 COMMAND="${1:-info}"
@@ -369,6 +372,9 @@ wait_for_service() {
   for _ in $(seq 1 30); do
     if compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
       return 0
+    fi
+    if ! compose ps --status running -q mail-collector 2>/dev/null | grep -q .; then
+      return 1
     fi
     sleep 2
   done
@@ -465,6 +471,13 @@ for _ in $(seq 1 30); do
   if compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
     break
   fi
+  if ! compose ps --status running -q mail-collector 2>/dev/null | grep -q .; then
+    echo "Mail Collector container exited before becoming healthy. Container state:" >&2
+    compose ps -a >&2 || true
+    echo "Recent logs:" >&2
+    compose logs --tail=80 mail-collector >&2 || true
+    exit 1
+  fi
   sleep 2
 done
 
@@ -472,6 +485,14 @@ if ! compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/se
   echo "Mail Collector did not become healthy. Recent logs:" >&2
   compose logs --tail=80 mail-collector >&2 || true
   exit 1
+fi
+
+if [[ "$PROXY_MODE" == "external" ]]; then
+  if ! curl -fsS "http://127.0.0.1:${LOCAL_PORT}/api/service" >/dev/null; then
+    echo "Mail Collector is healthy inside the container, but 127.0.0.1:${LOCAL_PORT} is not reachable on the host." >&2
+    compose ps -a >&2 || true
+    exit 1
+  fi
 fi
 
 echo
