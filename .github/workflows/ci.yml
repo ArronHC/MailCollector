@@ -22,6 +22,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Validate VPS one-command installer
+        run: |
+          bash -n scripts/install-vps.sh
+          bash scripts/install-vps.sh --help >/dev/null
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
