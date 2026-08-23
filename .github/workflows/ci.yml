@@ -25,7 +25,9 @@ jobs:
       - name: Validate VPS one-command installer
         run: |
           bash -n scripts/install-vps.sh
-          bash scripts/install-vps.sh --help >/dev/null
+          help="$(bash scripts/install-vps.sh --help)"
+          grep -F -- "--proxy-mode MODE" <<<"$help"
+          grep -F -- "--local-port PORT" <<<"$help"
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
