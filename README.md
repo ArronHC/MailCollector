@@ -161,7 +161,7 @@ Capacitor
 
 - Windows 客户端检测到新版本后，可在应用内下载安装器与 SHA-256 校验文件，校验通过后静默覆盖安装并重新启动，不需要进入 GitHub 手动下载安装包。
 - VPS 执行 `sudo mailcollector update` 即可更新；Docker 只拉取发生变化的镜像层，数据库和配置卷保持不变。
-- Android 暂不纳入应用内更新和正式 Release 自动发布，现有 APK 可继续使用。
+- Android 暂不提供应用内增量更新；每次客户端 Release 会同时发布版本化 APK 与 SHA-256 校验文件，可直接下载安装。
 
 ## 开发
 

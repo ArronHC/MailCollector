@@ -2,15 +2,6 @@ name: Android Verification
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'frontend/**'
-      - 'src-tauri/icons/**'
-      - 'capacitor.config.ts'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/android-apk.yml'
   pull_request:
     paths:
       - 'frontend/**'
