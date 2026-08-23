@@ -361,7 +361,7 @@ pub async fn authorize_mail_provider(
             query.append_pair("access_type", "offline");
         }
     }
-    crate::open_external_url(authorization_url.to_string())?;
+    crate::open_external_url_impl(authorization_url.as_str())?;
     let callback_state = state.clone();
     let code =
         tauri::async_runtime::spawn_blocking(move || wait_for_callback(listener, callback_state))

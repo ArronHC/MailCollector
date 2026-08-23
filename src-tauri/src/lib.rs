@@ -17,15 +17,19 @@ fn allowed_oauth_url(url: &str) -> bool {
 }
 
 #[tauri::command]
-pub(crate) fn open_external_url(url: String) -> Result<(), String> {
-    if !allowed_oauth_url(&url) {
+fn open_external_url(url: String) -> Result<(), String> {
+    open_external_url_impl(&url)
+}
+
+pub(crate) fn open_external_url_impl(url: &str) -> Result<(), String> {
+    if !allowed_oauth_url(url) {
         return Err("只允许打开受信任的 OAuth 登录地址".to_string());
     }
 
     #[cfg(windows)]
     {
         let mut command = Command::new("explorer.exe");
-        command.arg(&url).creation_flags(CREATE_NO_WINDOW);
+        command.arg(url).creation_flags(CREATE_NO_WINDOW);
         command.spawn().map_err(|error| error.to_string())?;
         return Ok(());
     }
@@ -33,7 +37,7 @@ pub(crate) fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
-            .arg(&url)
+            .arg(url)
             .spawn()
             .map_err(|error| error.to_string())?;
         return Ok(());
@@ -42,7 +46,7 @@ pub(crate) fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         Command::new("xdg-open")
-            .arg(&url)
+            .arg(url)
             .spawn()
             .map_err(|error| error.to_string())?;
         return Ok(());
