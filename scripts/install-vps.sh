@@ -76,12 +76,12 @@ if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || [[ "$DOMAIN" != *.* ]]; then
   exit 2
 fi
 
-if ! command -v curl >/dev/null 2>&1; then
+if ! command -v curl >/dev/null 2>&1 || { ! command -v openssl >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; }; then
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl
   else
-    echo "curl is required. Install curl first and run the installer again." >&2
+    echo "curl and either openssl or python3 are required. Install them first and run the installer again." >&2
     exit 1
   fi
 fi
