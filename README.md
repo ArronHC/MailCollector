@@ -32,80 +32,50 @@ Gmail / Outlook / QQ / 163 / IMAP
 
 旧的 `v0.10.1-vps-relay-preview.1` 架构仍可作为历史版本使用，但它要求 Windows 在线；新架构不再使用该依赖关系。
 
-## VPS 部署
+## VPS 一键部署
 
-推荐使用 Docker，并在前面放 Nginx、Caddy 或 Nginx Proxy Manager 提供 HTTPS。
-
-### 1. 准备环境变量
-
-复制 `.env.example` 为 `.env`，至少设置：
-
-```env
-ENCRYPTION_KEY=<64 位十六进制随机值>
-API_KEY=<长随机值>
-REGISTRATION_INVITE_CODE=<首次注册邀请码>
-OAUTH_REDIRECT_BASE_URL=https://mail.example.com/
-```
-
-生成随机值可以使用：
+准备一台 Ubuntu/Debian VPS、一个已经解析到该 VPS 的域名，并放行 TCP 80/443。然后只运行这一条命令：
 
 ```bash
-openssl rand -hex 32
+curl -fsSL https://raw.githubusercontent.com/ArronHC/MailCollector/main/scripts/install-vps.sh | sudo bash
 ```
 
-`ENCRYPTION_KEY` 一旦投入使用不要随意更换，否则已有加密邮箱凭据将无法读取。
+脚本只会询问一次公网域名，例如 `mail.example.com`，其余工作全部自动完成：
 
-### 2. Docker Compose 示例
+- 安装 Docker Engine 与 Compose
+- 生成加密密钥、API Key 和管理员邀请码
+- 配置 Caddy 与自动 HTTPS
+- 拉取并启动最新 GHCR 镜像
+- 等待服务健康后显示客户端地址和管理员邀请码
+- 安装 `mailcollector` 管理命令
 
-```yaml
-services:
-  mail-collector:
-    image: ghcr.io/arronhc/mailcollector:latest
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-    ports:
-      - "127.0.0.1:8080:8080"
+安装完成后，终端会集中显示：
+
+```text
+URL:                  https://mail.example.com/
+Administrator invite: <管理员邀请码>
+Administrator exists: no
+Service version:      0.12.0
 ```
 
-如果自行从源码构建：
+以后无需再寻找 `.env`，直接使用：
 
 ```bash
-docker build -t mail-collector .
-docker run -d \
-  --name mail-collector \
-  --restart unless-stopped \
-  --env-file .env \
-  -v "$PWD/data:/app/data" \
-  -p 127.0.0.1:8080:8080 \
-  mail-collector
+sudo mailcollector info      # 查看地址和管理员邀请码
+sudo mailcollector update    # 更新到最新镜像并等待服务恢复
+sudo mailcollector status    # 查看容器状态
+sudo mailcollector logs      # 查看实时日志
+sudo mailcollector restart   # 重启服务
 ```
 
-### 3. HTTPS 反向代理
+需要无人值守或自定义目录时，仍可传入参数：
 
-公网只需要暴露 HTTPS。反向代理目标指向：
-
-```text
-http://127.0.0.1:8080
+```bash
+sudo bash install-vps.sh --domain mail.example.com
+sudo bash install-vps.sh --domain mail.example.com --email you@example.com --dir /opt/mail-collector
 ```
 
-例如最终地址：
-
-```text
-https://mail.example.com
-```
-
-客户端首次启动时填写这个地址即可。
-
-不再需要：
-
-- frps
-- frpc
-- 7000 端口
-- 23001 端口
-- Windows 公网穿透
+已有安装再次运行一键命令时，会自动读取原域名并保留已有密钥与数据，只更新部署配置和镜像。
 
 ## 首次注册与登录
 
@@ -115,7 +85,7 @@ Windows 或 Android 第一次连接 VPS 时：
 
 1. 填写 `https://mail.example.com`。
 2. 进入注册界面。
-3. 输入邮箱、密码和 `.env` 中的 `REGISTRATION_INVITE_CODE`。
+3. 输入邮箱、密码和安装完成页显示的管理员邀请码；之后可用 `sudo mailcollector info` 重新查看。
 4. 注册成功后，该客户端会得到独立的登录 session token。
 5. 另一台设备直接连接同一个 VPS 并使用同一账户登录即可。
 
