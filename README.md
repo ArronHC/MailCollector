@@ -34,7 +34,7 @@ Gmail / Outlook / QQ / 163 / IMAP
 
 ## VPS 一键部署
 
-准备一台 Ubuntu/Debian VPS、一个已经解析到该 VPS 的域名，并放行 TCP 80/443。然后只运行这一条命令：
+准备一台 Ubuntu/Debian VPS、一个已经解析到该 VPS 的域名，并放行 TCP 80/443。无论 VPS 是否已经安装 1Panel/OpenResty，都只运行这一条命令：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArronHC/MailCollector/main/scripts/install-vps.sh | sudo bash
@@ -44,7 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/ArronHC/MailCollector/main/scripts/
 
 - 安装 Docker Engine 与 Compose
 - 生成加密密钥、API Key 和管理员邀请码
-- 配置 Caddy 与自动 HTTPS
+- 80/443 空闲时配置 Caddy 与自动 HTTPS
+- 检测到 1Panel/OpenResty 等现有 Web 服务时，自动改用本机回环端口并显示反向代理目标
 - 拉取并启动最新 GHCR 镜像
 - 等待服务健康后显示客户端地址和管理员邀请码
 - 安装 `mailcollector` 管理命令
@@ -76,6 +77,8 @@ sudo bash install-vps.sh --domain mail.example.com --email you@example.com --dir
 ```
 
 已有安装再次运行一键命令时，会自动读取原域名并保留已有密钥与数据，只更新部署配置和镜像。
+
+如果 80/443 已被 1Panel/OpenResty 占用，安装器不会停止现有网站服务，也不会启动自带 Caddy。Mail Collector 会自动绑定到 `127.0.0.1:18080`（端口冲突时顺延选择空闲端口），终端会显示需要填写到 1Panel 反向代理中的目标地址。以后执行 `sudo mailcollector update` 或 `restart` 会持续沿用该模式。
 
 ## 首次注册与登录
 

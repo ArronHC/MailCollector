@@ -6,6 +6,8 @@ IMAGE="${MAIL_COLLECTOR_IMAGE:-ghcr.io/arronhc/mailcollector:latest}"
 DOMAIN="${MAIL_COLLECTOR_DOMAIN:-}"
 EMAIL="${MAIL_COLLECTOR_ACME_EMAIL:-}"
 FORCE=0
+PROXY_MODE="${MAIL_COLLECTOR_PROXY_MODE:-auto}"
+LOCAL_PORT="${MAIL_COLLECTOR_LOCAL_PORT:-18080}"
 
 usage() {
   cat <<'EOF'
@@ -22,6 +24,8 @@ Options:
   --email EMAIL     Optional ACME contact email for Caddy
   --dir PATH        Install directory (default: /opt/mail-collector)
   --image IMAGE     Container image (default: ghcr.io/arronhc/mailcollector:latest)
+  --proxy-mode MODE Reverse proxy mode: auto, bundled, or external (default: auto)
+  --local-port PORT Loopback port for an existing reverse proxy (default: 18080)
   --force           Overwrite generated compose/Caddy configuration, preserving .env secrets
   -h, --help        Show this help
 EOF
@@ -37,6 +41,10 @@ while [[ $# -gt 0 ]]; do
       APP_DIR="${2:-}"; shift 2 ;;
     --image)
       IMAGE="${2:-}"; shift 2 ;;
+    --proxy-mode)
+      PROXY_MODE="${2:-}"; shift 2 ;;
+    --local-port)
+      LOCAL_PORT="${2:-}"; shift 2 ;;
     --force)
       FORCE=1; shift ;;
     -h|--help)
@@ -73,6 +81,16 @@ DOMAIN="${DOMAIN%/}"
 
 if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || [[ "$DOMAIN" != *.* ]]; then
   echo "Invalid domain: $DOMAIN" >&2
+  exit 2
+fi
+
+if [[ "$PROXY_MODE" != "auto" && "$PROXY_MODE" != "bundled" && "$PROXY_MODE" != "external" ]]; then
+  echo "--proxy-mode must be auto, bundled, or external" >&2
+  exit 2
+fi
+
+if [[ ! "$LOCAL_PORT" =~ ^[0-9]+$ ]] || (( LOCAL_PORT < 1024 || LOCAL_PORT > 65535 )); then
+  echo "--local-port must be between 1024 and 65535" >&2
   exit 2
 fi
 
@@ -121,6 +139,76 @@ PY
 install_docker
 mkdir -p "$APP_DIR/data" "$APP_DIR/caddy-data" "$APP_DIR/caddy-config"
 chmod 700 "$APP_DIR"
+
+port_in_use() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .
+  else
+    timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" >/dev/null 2>&1
+  fi
+}
+
+OVERRIDE_FILE="$APP_DIR/compose.mailcollector-proxy.yaml"
+MANAGED_OVERRIDE=0
+if [[ -f "$OVERRIDE_FILE" ]]; then
+  if head -n1 "$OVERRIDE_FILE" | grep -Fxq "# Managed by Mail Collector installer"; then
+    MANAGED_OVERRIDE=1
+    SAVED_LOCAL_PORT="$(sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\):8080.*/\1/p' "$OVERRIDE_FILE" | head -n1)"
+    if [[ -n "$SAVED_LOCAL_PORT" ]]; then
+      LOCAL_PORT="$SAVED_LOCAL_PORT"
+    fi
+  else
+    echo "Refusing to overwrite unmanaged file: $OVERRIDE_FILE" >&2
+    exit 1
+  fi
+fi
+
+OWN_CADDY_RUNNING=0
+if [[ -f "$APP_DIR/compose.yaml" ]] && (cd "$APP_DIR" && docker compose ps -q caddy 2>/dev/null | grep -q .); then
+  OWN_CADDY_RUNNING=1
+fi
+
+if [[ "$PROXY_MODE" == "auto" ]]; then
+  if [[ "$MANAGED_OVERRIDE" -eq 1 ]]; then
+    PROXY_MODE="external"
+  elif [[ "$OWN_CADDY_RUNNING" -eq 1 ]]; then
+    PROXY_MODE="bundled"
+  elif port_in_use 80 || port_in_use 443; then
+    PROXY_MODE="external"
+  else
+    PROXY_MODE="bundled"
+  fi
+fi
+
+if [[ "$PROXY_MODE" == "bundled" ]] && [[ "$OWN_CADDY_RUNNING" -ne 1 ]] && { port_in_use 80 || port_in_use 443; }; then
+  echo "Ports 80/443 are already in use. Use --proxy-mode external or leave auto mode enabled." >&2
+  exit 1
+fi
+
+if [[ "$PROXY_MODE" == "external" && "$MANAGED_OVERRIDE" -ne 1 ]] && port_in_use "$LOCAL_PORT"; then
+  START_PORT="$LOCAL_PORT"
+  for candidate in $(seq "$START_PORT" $((START_PORT + 20))); do
+    if ! port_in_use "$candidate"; then
+      LOCAL_PORT="$candidate"
+      break
+    fi
+  done
+  if port_in_use "$LOCAL_PORT"; then
+    echo "Could not find a free loopback port between $START_PORT and $((START_PORT + 20))." >&2
+    exit 1
+  fi
+fi
+
+OPENRESTY_DETECTED=0
+if ps -eo comm= 2>/dev/null | grep -qx openresty; then
+  OPENRESTY_DETECTED=1
+fi
+
+echo "Reverse proxy mode: $PROXY_MODE"
+if [[ "$PROXY_MODE" == "external" ]]; then
+  echo "Existing web server detected; Mail Collector will listen on 127.0.0.1:$LOCAL_PORT."
+fi
 
 ENV_FILE="$APP_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -214,6 +302,32 @@ if [[ ! -f "$CADDY_FILE" || "$FORCE" -eq 1 ]]; then
   } > "$CADDY_FILE"
 fi
 
+if [[ "$PROXY_MODE" == "external" ]]; then
+  cat > "$OVERRIDE_FILE" <<EOF
+# Managed by Mail Collector installer
+services:
+  mail-collector:
+    ports:
+      - "127.0.0.1:${LOCAL_PORT}:8080"
+  caddy:
+    profiles:
+      - bundled-proxy
+EOF
+else
+  if [[ "$MANAGED_OVERRIDE" -eq 1 ]]; then
+    rm -f "$OVERRIDE_FILE"
+  fi
+fi
+
+COMPOSE_FILES=(-f "$COMPOSE_FILE")
+if [[ -f "$OVERRIDE_FILE" ]]; then
+  COMPOSE_FILES+=(-f "$OVERRIDE_FILE")
+fi
+
+compose() {
+  docker compose "${COMPOSE_FILES[@]}" "$@"
+}
+
 MANAGE_FILE="$APP_DIR/mailcollector"
 cat > "$MANAGE_FILE" <<'MANAGE'
 #!/usr/bin/env bash
@@ -221,12 +335,26 @@ set -Eeuo pipefail
 
 APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ENV_FILE="$APP_DIR/.env"
+OVERRIDE_FILE="$APP_DIR/compose.mailcollector-proxy.yaml"
 COMMAND="${1:-info}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Please run with sudo: sudo mailcollector $COMMAND" >&2
   exit 1
 fi
+
+COMPOSE_FILES=(-f "$APP_DIR/compose.yaml")
+EXTERNAL_PROXY=0
+LOCAL_PORT=""
+if [[ -f "$OVERRIDE_FILE" ]] && head -n1 "$OVERRIDE_FILE" | grep -Fxq "# Managed by Mail Collector installer"; then
+  COMPOSE_FILES+=(-f "$OVERRIDE_FILE")
+  EXTERNAL_PROXY=1
+  LOCAL_PORT="$(sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\):8080.*/\1/p' "$OVERRIDE_FILE" | head -n1)"
+fi
+
+compose() {
+  docker compose "${COMPOSE_FILES[@]}" "$@"
+}
 
 if [[ ! -f "$ENV_FILE" || ! -f "$APP_DIR/compose.yaml" ]]; then
   echo "Mail Collector installation was not found in $APP_DIR." >&2
@@ -239,7 +367,7 @@ read_value() {
 
 wait_for_service() {
   for _ in $(seq 1 30); do
-    if docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+    if compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
       return 0
     fi
     sleep 2
@@ -251,8 +379,8 @@ show_info() {
   local url invite version registered
   url="$(read_value OAUTH_REDIRECT_BASE_URL)"
   invite="$(read_value REGISTRATION_INVITE_CODE)"
-  version="$(docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>r.json()).then(v=>console.log(v.version)).catch(()=>process.exit(1))" 2>/dev/null || echo unknown)"
-  registered="$(docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/auth/status').then(r=>r.json()).then(v=>console.log(v.registered?'yes':'no')).catch(()=>process.exit(1))" 2>/dev/null || echo unknown)"
+  version="$(compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>r.json()).then(v=>console.log(v.version)).catch(()=>process.exit(1))" 2>/dev/null || echo unknown)"
+  registered="$(compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/auth/status').then(r=>r.json()).then(v=>console.log(v.registered?'yes':'no')).catch(()=>process.exit(1))" 2>/dev/null || echo unknown)"
 
   echo
   echo "============================================================"
@@ -262,6 +390,9 @@ show_info() {
   echo " Administrator invite: $invite"
   echo " Administrator exists: $registered"
   echo " Service version:      $version"
+  if [[ "$EXTERNAL_PROXY" -eq 1 ]]; then
+    echo " Reverse proxy target: http://127.0.0.1:$LOCAL_PORT"
+  fi
   echo " Install directory:    $APP_DIR"
   echo "============================================================"
   echo
@@ -273,27 +404,36 @@ case "$COMMAND" in
     show_info
     ;;
   update)
-    docker compose pull
-    docker compose up -d --remove-orphans
+    if [[ "$EXTERNAL_PROXY" -eq 1 ]]; then
+      compose pull mail-collector
+      compose up -d --remove-orphans mail-collector
+    else
+      compose pull
+      compose up -d --remove-orphans
+    fi
     if ! wait_for_service; then
-      docker compose logs --tail=80 mail-collector >&2 || true
+      compose logs --tail=80 mail-collector >&2 || true
       exit 1
     fi
     show_info
     ;;
   restart)
-    docker compose restart
+    if [[ "$EXTERNAL_PROXY" -eq 1 ]]; then
+      compose restart mail-collector
+    else
+      compose restart
+    fi
     if ! wait_for_service; then
-      docker compose logs --tail=80 mail-collector >&2 || true
+      compose logs --tail=80 mail-collector >&2 || true
       exit 1
     fi
     show_info
     ;;
   status)
-    docker compose ps
+    compose ps
     ;;
   logs)
-    exec docker compose logs --tail=200 -f
+    compose logs --tail=200 -f
     ;;
   *)
     echo "Usage: sudo mailcollector {info|update|restart|status|logs}" >&2
@@ -310,20 +450,27 @@ else
 fi
 
 cd "$APP_DIR"
-docker compose pull
-docker compose up -d --remove-orphans
+if [[ "$PROXY_MODE" == "external" ]]; then
+  docker compose -f "$COMPOSE_FILE" stop caddy >/dev/null 2>&1 || true
+  docker compose -f "$COMPOSE_FILE" rm -f caddy >/dev/null 2>&1 || true
+  compose pull mail-collector
+  compose up -d --remove-orphans mail-collector
+else
+  compose pull
+  compose up -d --remove-orphans
+fi
 
 echo "Checking Mail Collector container health..."
 for _ in $(seq 1 30); do
-  if docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+  if compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
     break
   fi
   sleep 2
 done
 
-if ! docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+if ! compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
   echo "Mail Collector did not become healthy. Recent logs:" >&2
-  docker compose logs --tail=80 mail-collector >&2 || true
+  compose logs --tail=80 mail-collector >&2 || true
   exit 1
 fi
 
@@ -331,8 +478,18 @@ echo
 echo "Mail Collector VPS deployment is running."
 "$MANAGE_FILE" info
 echo "Next steps:"
-echo "  1. Confirm ${DOMAIN} resolves to this VPS and TCP 80/443 are reachable."
-echo "  2. Enter https://${DOMAIN} and the invite code shown above in the Windows/Android client."
+if [[ "$PROXY_MODE" == "external" ]]; then
+  if [[ "$OPENRESTY_DETECTED" -eq 1 ]]; then
+    echo "  1. In 1Panel, create a reverse-proxy website for ${DOMAIN}."
+  else
+    echo "  1. In your existing web server, create an HTTPS reverse proxy for ${DOMAIN}."
+  fi
+  echo "  2. Set the proxy target to http://127.0.0.1:${LOCAL_PORT} and enable HTTPS."
+  echo "  3. Enter https://${DOMAIN} and the invite code shown above in the Windows/Android client."
+else
+  echo "  1. Confirm ${DOMAIN} resolves to this VPS and TCP 80/443 are reachable."
+  echo "  2. Enter https://${DOMAIN} and the invite code shown above in the Windows/Android client."
+fi
 echo
 echo "Useful commands:"
 echo "  sudo mailcollector info     Show URL and administrator invite code"
