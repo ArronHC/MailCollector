@@ -3,19 +3,22 @@ set -Eeuo pipefail
 
 APP_DIR="${MAIL_COLLECTOR_DIR:-/opt/mail-collector}"
 IMAGE="${MAIL_COLLECTOR_IMAGE:-ghcr.io/arronhc/mailcollector:latest}"
-DOMAIN=""
-EMAIL=""
+DOMAIN="${MAIL_COLLECTOR_DOMAIN:-}"
+EMAIL="${MAIL_COLLECTOR_ACME_EMAIL:-}"
 FORCE=0
 
 usage() {
   cat <<'EOF'
 Mail Collector VPS one-click installer
 
-Usage:
+Quick install:
+  curl -fsSL https://raw.githubusercontent.com/ArronHC/MailCollector/main/scripts/install-vps.sh | sudo bash
+
+Unattended install:
   sudo bash install-vps.sh --domain mail.example.com [--email you@example.com]
 
 Options:
-  --domain DOMAIN   Public HTTPS domain used by Windows/Android clients (required)
+  --domain DOMAIN   Public HTTPS domain used by Windows/Android clients; prompts when omitted
   --email EMAIL     Optional ACME contact email for Caddy
   --dir PATH        Install directory (default: /opt/mail-collector)
   --image IMAGE     Container image (default: ghcr.io/arronhc/mailcollector:latest)
@@ -45,19 +48,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$DOMAIN" ]]; then
-  echo "--domain is required, for example: --domain mail.example.com" >&2
-  exit 2
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Please run this installer as root (for example with sudo)." >&2
+  exit 1
 fi
+
+if [[ -z "$DOMAIN" && -f "$APP_DIR/.env" ]]; then
+  EXISTING_URL="$(sed -n 's/^OAUTH_REDIRECT_BASE_URL=//p' "$APP_DIR/.env" | head -n1)"
+  DOMAIN="${EXISTING_URL#https://}"
+  DOMAIN="${DOMAIN%/}"
+fi
+
+if [[ -z "$DOMAIN" ]]; then
+  if [[ ! -r /dev/tty ]]; then
+    echo "No interactive terminal is available. Re-run with --domain mail.example.com." >&2
+    exit 2
+  fi
+  printf '\nMail Collector public domain (for example mail.example.com): ' > /dev/tty
+  IFS= read -r DOMAIN < /dev/tty
+fi
+
+DOMAIN="${DOMAIN#https://}"
+DOMAIN="${DOMAIN%/}"
 
 if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || [[ "$DOMAIN" != *.* ]]; then
   echo "Invalid domain: $DOMAIN" >&2
   exit 2
-fi
-
-if [[ "${EUID}" -ne 0 ]]; then
-  echo "Please run this installer as root (for example with sudo)." >&2
-  exit 1
 fi
 
 if ! command -v curl >/dev/null 2>&1; then
@@ -198,6 +214,101 @@ if [[ ! -f "$CADDY_FILE" || "$FORCE" -eq 1 ]]; then
   } > "$CADDY_FILE"
 fi
 
+MANAGE_FILE="$APP_DIR/mailcollector"
+cat > "$MANAGE_FILE" <<'MANAGE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ENV_FILE="$APP_DIR/.env"
+COMMAND="${1:-info}"
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Please run with sudo: sudo mailcollector $COMMAND" >&2
+  exit 1
+fi
+
+if [[ ! -f "$ENV_FILE" || ! -f "$APP_DIR/compose.yaml" ]]; then
+  echo "Mail Collector installation was not found in $APP_DIR." >&2
+  exit 1
+fi
+
+read_value() {
+  sed -n "s/^${1}=//p" "$ENV_FILE" | head -n1
+}
+
+wait_for_service() {
+  for _ in $(seq 1 30); do
+    if docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+show_info() {
+  local url invite version registered
+  url="$(read_value OAUTH_REDIRECT_BASE_URL)"
+  invite="$(read_value REGISTRATION_INVITE_CODE)"
+  version="$(docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/service').then(r=>r.json()).then(v=>console.log(v.version)).catch(()=>process.exit(1))" 2>/dev/null || echo unknown)"
+  registered="$(docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080/api/auth/status').then(r=>r.json()).then(v=>console.log(v.registered?'yes':'no')).catch(()=>process.exit(1))" 2>/dev/null || echo unknown)"
+
+  echo
+  echo "============================================================"
+  echo " Mail Collector"
+  echo "------------------------------------------------------------"
+  echo " URL:                  $url"
+  echo " Administrator invite: $invite"
+  echo " Administrator exists: $registered"
+  echo " Service version:      $version"
+  echo " Install directory:    $APP_DIR"
+  echo "============================================================"
+  echo
+}
+
+cd "$APP_DIR"
+case "$COMMAND" in
+  info)
+    show_info
+    ;;
+  update)
+    docker compose pull
+    docker compose up -d --remove-orphans
+    if ! wait_for_service; then
+      docker compose logs --tail=80 mail-collector >&2 || true
+      exit 1
+    fi
+    show_info
+    ;;
+  restart)
+    docker compose restart
+    if ! wait_for_service; then
+      docker compose logs --tail=80 mail-collector >&2 || true
+      exit 1
+    fi
+    show_info
+    ;;
+  status)
+    docker compose ps
+    ;;
+  logs)
+    exec docker compose logs --tail=200 -f
+    ;;
+  *)
+    echo "Usage: sudo mailcollector {info|update|restart|status|logs}" >&2
+    exit 2
+    ;;
+esac
+MANAGE
+chmod 700 "$MANAGE_FILE"
+
+if [[ ! -e /usr/local/bin/mailcollector || -L /usr/local/bin/mailcollector ]]; then
+  ln -sfn "$MANAGE_FILE" /usr/local/bin/mailcollector
+else
+  echo "Warning: /usr/local/bin/mailcollector already exists; management command installed at $MANAGE_FILE." >&2
+fi
+
 cd "$APP_DIR"
 docker compose pull
 docker compose up -d --remove-orphans
@@ -216,19 +327,15 @@ if ! docker compose exec -T mail-collector node -e "fetch('http://127.0.0.1:8080
   exit 1
 fi
 
-INVITE_CODE="$(sed -n 's/^REGISTRATION_INVITE_CODE=//p' "$ENV_FILE" | head -n1)"
-
 echo
 echo "Mail Collector VPS deployment is running."
-echo "Public URL: https://${DOMAIN}"
-echo "Install directory: ${APP_DIR}"
-echo "First-registration invite code: ${INVITE_CODE}"
-echo
+"$MANAGE_FILE" info
 echo "Next steps:"
 echo "  1. Confirm ${DOMAIN} resolves to this VPS and TCP 80/443 are reachable."
-echo "  2. Open https://${DOMAIN} or configure the Windows/Android client with that URL."
-echo "  3. If using Gmail/Microsoft OAuth, edit ${ENV_FILE} and set the OAuth client IDs, then run:"
-echo "       cd ${APP_DIR} && docker compose up -d"
+echo "  2. Enter https://${DOMAIN} and the invite code shown above in the Windows/Android client."
 echo
-echo "Update later with:"
-echo "  cd ${APP_DIR} && docker compose pull && docker compose up -d"
+echo "Useful commands:"
+echo "  sudo mailcollector info     Show URL and administrator invite code"
+echo "  sudo mailcollector update   Pull the latest image and restart safely"
+echo "  sudo mailcollector status   Show container status"
+echo "  sudo mailcollector logs     Follow service logs"
