@@ -1,15 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  compareVersions,
-  expectedAndroidPackage,
-  expectedWindowsInstaller,
-  hasInstallableAndroidAssets,
-  hasInstallableWindowsAssets,
-  parseVersion,
-  releaseVersion,
-  type LatestRelease
-} from "../frontend/src/update.js";
+import { compareVersions, expectedWindowsInstaller, hasInstallableWindowsAssets, parseVersion, releaseVersion, type LatestRelease } from "../frontend/src/update.js";
 
 test("parseVersion accepts release tags and semantic versions", () => {
   assert.deepEqual(parseVersion("v0.9.0"), { major: 0, minor: 9, patch: 0 });
@@ -24,10 +15,9 @@ test("compareVersions compares numeric semantic version parts", () => {
   assert.equal(compareVersions("v2.0.0", "2.0.0"), 0);
 });
 
-test("release helpers require canonical installers and checksum assets", () => {
+test("release helpers require installer and checksum assets", () => {
   const version = "0.13.0";
-  const windows = expectedWindowsInstaller(version);
-  const android = expectedAndroidPackage(version);
+  const installer = expectedWindowsInstaller(version);
   const release: LatestRelease = {
     tag_name: `v${version}`,
     name: "Mail Collector v0.13.0",
@@ -36,15 +26,12 @@ test("release helpers require canonical installers and checksum assets", () => {
     draft: false,
     prerelease: false,
     assets: [
-      { name: windows, browser_download_url: "https://example.test/windows", size: 1 },
-      { name: `${windows}.sha256`, browser_download_url: "https://example.test/windows.sha256", size: 64 },
-      { name: android, browser_download_url: "https://example.test/android", size: 1 },
-      { name: `${android}.sha256`, browser_download_url: "https://example.test/android.sha256", size: 64 }
+      { name: installer, browser_download_url: "https://example.test/setup.exe", size: 1 },
+      { name: `${installer}.sha256`, browser_download_url: "https://example.test/setup.exe.sha256", size: 64 }
     ]
   };
   assert.equal(releaseVersion(release), version);
   assert.equal(hasInstallableWindowsAssets(release, version), true);
-  assert.equal(hasInstallableAndroidAssets(release, version), true);
   release.assets.pop();
-  assert.equal(hasInstallableAndroidAssets(release, version), false);
+  assert.equal(hasInstallableWindowsAssets(release, version), false);
 });

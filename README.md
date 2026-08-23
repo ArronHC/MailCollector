@@ -165,18 +165,11 @@ Capacitor
 
 首次启动只需要填写 VPS 地址并登录，不再输入电脑生成的 6 位配对码。
 
-## 客户端与服务端更新
+## 更新
 
-安装 `v0.13.0` 后，Windows 和 Android 都会在应用内检查正式 Release：
-
-- Windows：点击“应用内更新”后自动下载规范命名的安装器与 SHA-256，校验通过后静默覆盖安装并重新启动。
-- Android：点击“应用内更新”后自动下载 APK 与 SHA-256，校验通过后打开 Android 系统覆盖安装确认页，不再需要进入 GitHub。
-- VPS：执行 `sudo mailcollector update`；Docker 只拉取镜像中发生变化的分层并原地重建容器，数据库和配置卷不变。
-- 网页：由 VPS 提供，服务更新后刷新页面即可。
-
-Android 正式包必须始终使用同一把发布密钥。由于早期 GitHub Actions 发布的是临时 debug 签名，升级到 `v0.13.0` 时需要卸载旧 Android 客户端并手动安装一次新包；邮件主数据保存在 VPS，重新登录后会恢复。从 `v0.13.0` 开始，后续版本可直接覆盖更新。
-
-发布前需要在仓库 Actions secrets 中配置 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 和 `ANDROID_KEY_PASSWORD`。具体步骤见 [客户端更新与 Android 签名](docs/client-updates.md)。
+- Windows 客户端检测到新版本后，可在应用内下载安装器与 SHA-256 校验文件，校验通过后静默覆盖安装并重新启动，不需要进入 GitHub 手动下载安装包。
+- VPS 执行 `sudo mailcollector update` 即可更新；Docker 只拉取发生变化的镜像层，数据库和配置卷保持不变。
+- Android 暂不纳入应用内更新和正式 Release 自动发布，现有 APK 可继续使用。
 
 ## 开发
 

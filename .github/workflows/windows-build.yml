@@ -1,4 +1,4 @@
-name: Client Release
+name: Windows Client Release
 
 on:
   workflow_dispatch:
@@ -11,8 +11,6 @@ on:
       - "src-tauri/**"
       - "frontend/**"
       - "capacitor.config.ts"
-      - "mobile/**"
-      - "scripts/prepare-android-updater.mjs"
       - ".github/workflows/windows-build.yml"
 
 permissions:
@@ -20,7 +18,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: client-release-${{ github.ref }}
+  group: windows-client-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -97,92 +95,9 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
-  android:
-    name: Build signed Android client
-    runs-on: ubuntu-latest
-    env:
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: android-actions/setup-android@v3
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-      - name: Verify persistent Android signing configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-            if [ -z "${!name:-}" ]; then
-              echo "Missing required GitHub Actions secret: $name" >&2
-              exit 1
-            fi
-          done
-      - name: Install dependencies
-        run: npm ci
-      - name: Build frontend
-        run: npm run build:web
-      - name: Install Capacitor Android tooling
-        run: |
-          npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8
-          npx cap add android || true
-      - name: Add Android in-app updater
-        run: node scripts/prepare-android-updater.mjs
-      - name: Sync Android project
-        run: npx cap sync android
-      - name: Decode persistent Android signing key
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/mailcollector-release.jks
-          test -s android/app/mailcollector-release.jks
-      - name: Build signed Android release APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd android
-          ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file="$PWD/app/mailcollector-release.jks" \
-            -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
-            -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
-            -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
-      - name: Stage and verify Android APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets
-          source_apk="$(find android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' -print -quit)"
-          test -n "$source_apk"
-          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)"
-          "$build_tools/apksigner" verify --verbose --print-certs "$source_apk"
-          name="MailCollector-Android-${{ steps.version.outputs.tag }}.apk"
-          cp "$source_apk" "release-assets/${name}"
-          cd release-assets
-          sha256sum "$name" > "${name}.sha256"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-android
-          path: release-assets/*
-          if-no-files-found: error
-
   publish:
     name: Publish GitHub Release
-    needs: [windows, android]
+    needs: [windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -198,10 +113,9 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
-          pattern: release-*
+          name: release-windows
           path: release-assets
-          merge-multiple: true
-      - name: Publish Windows and Android packages
+      - name: Publish Windows package
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
@@ -214,7 +128,7 @@ jobs:
   report:
     name: Report client release status
     if: ${{ always() }}
-    needs: [windows, android, publish]
+    needs: [windows, publish]
     runs-on: ubuntu-latest
     steps:
       - name: Report client release status
@@ -223,7 +137,6 @@ jobs:
           script: |
             const results = {
               windows: '${{ needs.windows.result }}',
-              android: '${{ needs.android.result }}',
               publish: '${{ needs.publish.result }}'
             };
             const ok = Object.values(results).every((result) => result === 'success');
@@ -233,7 +146,7 @@ jobs:
               sha: context.sha,
               state: ok ? 'success' : 'failure',
               context: 'release/client',
-              description: ok ? 'Windows + Android release published' : `windows=${results.windows}, android=${results.android}, publish=${results.publish}`,
+              description: ok ? 'Windows release published' : `windows=${results.windows}, publish=${results.publish}`,
               target_url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
             });
             if (!ok) core.setFailed('Client release failed');
