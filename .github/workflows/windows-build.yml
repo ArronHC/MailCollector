@@ -8,8 +8,7 @@ on:
     paths:
       - "package.json"
       - "package-lock.json"
-      - "src-tauri/tauri.conf.json"
-      - "src-tauri/Cargo.toml"
+      - "src-tauri/**"
       - "frontend/**"
       - "capacitor.config.ts"
       - "mobile/**"

@@ -18,6 +18,8 @@ on:
       - 'frontend/**'
       - 'src-tauri/icons/**'
       - 'capacitor.config.ts'
+      - 'mobile/**'
+      - 'scripts/prepare-android-updater.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/android-apk.yml'
