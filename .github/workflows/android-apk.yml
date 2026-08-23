@@ -8,8 +8,6 @@ on:
       - 'frontend/**'
       - 'src-tauri/icons/**'
       - 'capacitor.config.ts'
-      - 'mobile/**'
-      - 'scripts/prepare-android-updater.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/android-apk.yml'
@@ -18,8 +16,6 @@ on:
       - 'frontend/**'
       - 'src-tauri/icons/**'
       - 'capacitor.config.ts'
-      - 'mobile/**'
-      - 'scripts/prepare-android-updater.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/android-apk.yml'
@@ -57,8 +53,6 @@ jobs:
         run: npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8 @capacitor/assets@3
       - name: Create Android project
         run: npx cap add android
-      - name: Add Android in-app updater
-        run: node scripts/prepare-android-updater.mjs
       - name: Generate Android launcher assets
         run: |
           npx capacitor-assets generate \
