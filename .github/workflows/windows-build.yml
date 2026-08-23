@@ -96,7 +96,7 @@ jobs:
           $legacyTarget = Join-Path $PWD "release-assets/$legacyName"
           Copy-Item -LiteralPath $target -Destination $legacyTarget
           "$hash  $legacyName" | Set-Content -Encoding ascii "$legacyTarget.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-windows
           path: release-assets/*
@@ -149,7 +149,7 @@ jobs:
           cp android/app/build/outputs/apk/debug/app-debug.apk "release-assets/${name}"
           cd release-assets
           sha256sum "${name}" > "${name}.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-android
           path: release-assets/*
