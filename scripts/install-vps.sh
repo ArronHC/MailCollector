@@ -6,6 +6,8 @@ IMAGE="${MAIL_COLLECTOR_IMAGE:-ghcr.io/arronhc/mailcollector:latest}"
 DOMAIN="${MAIL_COLLECTOR_DOMAIN:-}"
 EMAIL="${MAIL_COLLECTOR_ACME_EMAIL:-}"
 FORCE=0
+PROXY_MODE="${MAIL_COLLECTOR_PROXY_MODE:-auto}"
+LOCAL_PORT="${MAIL_COLLECTOR_LOCAL_PORT:-18080}"
 
 usage() {
   cat <<'EOF'
@@ -22,6 +24,8 @@ Options:
   --email EMAIL     Optional ACME contact email for Caddy
   --dir PATH        Install directory (default: /opt/mail-collector)
   --image IMAGE     Container image (default: ghcr.io/arronhc/mailcollector:latest)
+  --proxy-mode MODE  auto, bundled, or external (default: auto)
+  --local-port PORT  Loopback port for an existing reverse proxy (default: 18080)
   --force           Overwrite generated compose/Caddy configuration, preserving .env secrets
   -h, --help        Show this help
 EOF
@@ -37,6 +41,10 @@ while [[ $# -gt 0 ]]; do
       APP_DIR="${2:-}"; shift 2 ;;
     --image)
       IMAGE="${2:-}"; shift 2 ;;
+    --proxy-mode)
+      PROXY_MODE="${2:-}"; shift 2 ;;
+    --local-port)
+      LOCAL_PORT="${2:-}"; shift 2 ;;
     --force)
       FORCE=1; shift ;;
     -h|--help)
@@ -73,6 +81,16 @@ DOMAIN="${DOMAIN%/}"
 
 if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || [[ "$DOMAIN" != *.* ]]; then
   echo "Invalid domain: $DOMAIN" >&2
+  exit 2
+fi
+
+if [[ "$PROXY_MODE" != "auto" && "$PROXY_MODE" != "bundled" && "$PROXY_MODE" != "external" ]]; then
+  echo "--proxy-mode must be auto, bundled, or external" >&2
+  exit 2
+fi
+
+if [[ ! "$LOCAL_PORT" =~ ^[0-9]+$ ]] || (( LOCAL_PORT < 1024 || LOCAL_PORT > 65535 )); then
+  echo "--local-port must be between 1024 and 65535" >&2
   exit 2
 fi
 
