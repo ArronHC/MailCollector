@@ -89,6 +89,13 @@ jobs:
           Copy-Item -LiteralPath $installers[0].FullName -Destination $target
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant()
           "$hash  $name" | Set-Content -Encoding ascii "$target.sha256"
+
+          # Keep the legacy asset name so clients older than 0.13.0 can bootstrap
+          # into the canonical in-app update channel without a manual download.
+          $legacyName = "Mail.Collector_$('${{ steps.version.outputs.version }}')_x64-setup.exe"
+          $legacyTarget = Join-Path $PWD "release-assets/$legacyName"
+          Copy-Item -LiteralPath $target -Destination $legacyTarget
+          "$hash  $legacyName" | Set-Content -Encoding ascii "$legacyTarget.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
