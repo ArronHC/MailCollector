@@ -16,13 +16,13 @@ test("compareVersions compares numeric semantic version parts", () => {
 });
 
 test("release helpers require installer and checksum assets", () => {
-  const version = "0.9.0";
+  const version = "0.13.0";
   const installer = expectedWindowsInstaller(version);
   const release: LatestRelease = {
     tag_name: `v${version}`,
-    name: "Mail Collector v0.9.0",
+    name: "Mail Collector v0.13.0",
     body: null,
-    published_at: "2026-08-18T00:00:00Z",
+    published_at: "2026-08-23T00:00:00Z",
     draft: false,
     prerelease: false,
     assets: [

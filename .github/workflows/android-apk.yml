@@ -1,4 +1,4 @@
-name: Android APK
+name: Android Verification
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ on:
       - '.github/workflows/android-apk.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: android-apk-${{ github.event.pull_request.number || github.ref }}
@@ -89,21 +89,3 @@ jobs:
         with:
           name: mail-collector-${{ steps.apk.outputs.version }}-android-apk
           path: ${{ steps.apk.outputs.path }}
-      - name: Upload APK to GitHub Release
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APK_PATH: ${{ steps.apk.outputs.path }}
-          VERSION: ${{ steps.apk.outputs.version }}
-        run: |
-          set -euo pipefail
-          tag="v${VERSION}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$APK_PATH" --clobber
-          else
-            gh release create "$tag" "$APK_PATH" \
-              --target "$GITHUB_SHA" \
-              --title "Mail Collector v${VERSION}" \
-              --notes "Mail Collector v${VERSION} release."
-          fi

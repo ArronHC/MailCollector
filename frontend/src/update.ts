@@ -49,7 +49,7 @@ export function releaseVersion(release: LatestRelease): string | null {
 }
 
 export function expectedWindowsInstaller(version: string): string {
-  return `Mail.Collector_${version}_x64-setup.exe`;
+  return `MailCollector-Windows-v${version}-x64-setup.exe`;
 }
 
 export function hasInstallableWindowsAssets(release: LatestRelease, version: string): boolean {
