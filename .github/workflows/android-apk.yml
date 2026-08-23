@@ -1,4 +1,4 @@
-name: Android APK
+name: Android Verification
 
 on:
   workflow_dispatch:
@@ -8,6 +8,8 @@ on:
       - 'frontend/**'
       - 'src-tauri/icons/**'
       - 'capacitor.config.ts'
+      - 'mobile/**'
+      - 'scripts/prepare-android-updater.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/android-apk.yml'
@@ -21,7 +23,7 @@ on:
       - '.github/workflows/android-apk.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: android-apk-${{ github.event.pull_request.number || github.ref }}
@@ -53,6 +55,8 @@ jobs:
         run: npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8 @capacitor/assets@3
       - name: Create Android project
         run: npx cap add android
+      - name: Add Android in-app updater
+        run: node scripts/prepare-android-updater.mjs
       - name: Generate Android launcher assets
         run: |
           npx capacitor-assets generate \
@@ -89,21 +93,3 @@ jobs:
         with:
           name: mail-collector-${{ steps.apk.outputs.version }}-android-apk
           path: ${{ steps.apk.outputs.path }}
-      - name: Upload APK to GitHub Release
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APK_PATH: ${{ steps.apk.outputs.path }}
-          VERSION: ${{ steps.apk.outputs.version }}
-        run: |
-          set -euo pipefail
-          tag="v${VERSION}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$APK_PATH" --clobber
-          else
-            gh release create "$tag" "$APK_PATH" \
-              --target "$GITHUB_SHA" \
-              --title "Mail Collector v${VERSION}" \
-              --notes "Mail Collector v${VERSION} release."
-          fi

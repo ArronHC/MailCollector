@@ -88,7 +88,7 @@ pub async fn install_update(app: AppHandle, version: String) -> Result<(), Strin
         let updates_dir = app_data.join("updates");
         fs::create_dir_all(&updates_dir).map_err(|error| error.to_string())?;
 
-        let installer_name = format!("Mail.Collector_{version}_x64-setup.exe");
+        let installer_name = format!("MailCollector-Windows-v{version}-x64-setup.exe");
         let installer_path = updates_dir.join(&installer_name);
         let checksum_path = updates_dir.join(format!("{installer_name}.sha256"));
         let base_url =

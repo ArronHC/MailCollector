@@ -12,6 +12,8 @@ on:
       - "src-tauri/Cargo.toml"
       - "frontend/**"
       - "capacitor.config.ts"
+      - "mobile/**"
+      - "scripts/prepare-android-updater.mjs"
       - ".github/workflows/windows-build.yml"
 
 permissions:
@@ -97,8 +99,13 @@ jobs:
           if-no-files-found: error
 
   android:
-    name: Build Android client
+    name: Build signed Android client
     runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -117,6 +124,16 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Verify persistent Android signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required GitHub Actions secret: $name" >&2
+              exit 1
+            fi
+          done
       - name: Install dependencies
         run: npm ci
       - name: Build frontend
@@ -125,18 +142,37 @@ jobs:
         run: |
           npm install --no-save @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8
           npx cap add android || true
+      - name: Add Android in-app updater
+        run: node scripts/prepare-android-updater.mjs
       - name: Sync Android project
         run: npx cap sync android
-      - name: Build Android APK
-        run: |
-          cd android
-          ./gradlew assembleDebug
-      - name: Stage Android APK
+      - name: Decode persistent Android signing key
         shell: bash
         run: |
+          set -euo pipefail
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/mailcollector-release.jks
+          test -s android/app/mailcollector-release.jks
+      - name: Build signed Android release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file="$PWD/app/mailcollector-release.jks" \
+            -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
+      - name: Stage and verify Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p release-assets
-          name="MailCollector-Android-${{ steps.version.outputs.tag }}-debug.apk"
-          cp android/app/build/outputs/apk/debug/app-debug.apk "release-assets/${name}"
+          source_apk="$(find android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' -print -quit)"
+          test -n "$source_apk"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)"
+          "$build_tools/apksigner" verify --verbose --print-certs "$source_apk"
+          name="MailCollector-Android-${{ steps.version.outputs.tag }}.apk"
+          cp "$source_apk" "release-assets/${name}"
           cd release-assets
           sha256sum "$name" > "${name}.sha256"
       - uses: actions/upload-artifact@v4

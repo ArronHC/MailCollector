@@ -23,6 +23,24 @@ export interface ParsedVersion {
   patch: number;
 }
 
+export type ClientPlatform = "windows" | "android" | "web";
+
+interface CapacitorBridge {
+  getPlatform?: () => string;
+  nativePromise?: <T>(plugin: string, method: string, options: Record<string, unknown>) => Promise<T>;
+}
+
+export function capacitorBridge(): CapacitorBridge | null {
+  if (typeof window === "undefined") return null;
+  return ((window as Window & { Capacitor?: CapacitorBridge }).Capacitor ?? null);
+}
+
+export function clientPlatform(): ClientPlatform {
+  if (typeof window === "undefined") return "web";
+  if ((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return "windows";
+  return capacitorBridge()?.getPlatform?.() === "android" ? "android" : "web";
+}
+
 export function parseVersion(value: string): ParsedVersion | null {
   const match = value.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i);
   if (!match) return null;
@@ -49,11 +67,25 @@ export function releaseVersion(release: LatestRelease): string | null {
 }
 
 export function expectedWindowsInstaller(version: string): string {
-  return `Mail.Collector_${version}_x64-setup.exe`;
+  return `MailCollector-Windows-v${version}-x64-setup.exe`;
+}
+
+export function expectedAndroidPackage(version: string): string {
+  return `MailCollector-Android-v${version}.apk`;
+}
+
+export function releaseAsset(release: LatestRelease, name: string): ReleaseAsset | null {
+  return release.assets.find((asset) => asset.name === name) ?? null;
+}
+
+function hasVerifiedAsset(release: LatestRelease, name: string): boolean {
+  return Boolean(releaseAsset(release, name) && releaseAsset(release, `${name}.sha256`));
 }
 
 export function hasInstallableWindowsAssets(release: LatestRelease, version: string): boolean {
-  const installer = expectedWindowsInstaller(version);
-  const names = new Set(release.assets.map((asset) => asset.name));
-  return names.has(installer) && names.has(`${installer}.sha256`);
+  return hasVerifiedAsset(release, expectedWindowsInstaller(version));
+}
+
+export function hasInstallableAndroidAssets(release: LatestRelease, version: string): boolean {
+  return hasVerifiedAsset(release, expectedAndroidPackage(version));
 }
