@@ -1,5 +1,7 @@
+mod oauth;
 mod updater;
 
+use oauth::authorize_mail_provider;
 use std::process::Command;
 use updater::install_update;
 
@@ -15,7 +17,7 @@ fn allowed_oauth_url(url: &str) -> bool {
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+pub(crate) fn open_external_url(url: String) -> Result<(), String> {
     if !allowed_oauth_url(&url) {
         return Err("只允许打开受信任的 OAuth 登录地址".to_string());
     }
@@ -52,7 +54,11 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![open_external_url, install_update])
+        .invoke_handler(tauri::generate_handler![
+            open_external_url,
+            authorize_mail_provider,
+            install_update
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Mail Collector");
 }

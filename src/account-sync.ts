@@ -42,6 +42,7 @@ export type AccountSyncAuth =
       provider: OAuthProvider;
       email: string;
       displayName: string;
+      clientId?: string;
       refreshToken: string;
       scope: string;
     };
@@ -138,6 +139,7 @@ const accountSyncPayloadSchema = z.object({
       provider: z.enum(["google", "microsoft"]),
       email: z.string().email().max(320),
       displayName: z.string().max(320),
+      clientId: z.string().trim().min(3).max(512).optional(),
       refreshToken: z.string().min(1).max(8000),
       scope: z.string().max(8000)
     })
@@ -702,6 +704,7 @@ export class AccountSyncManager {
         provider,
         email: credential.email,
         displayName: credential.displayName,
+        clientId: credential.clientId,
         refreshToken: credential.refreshToken,
         scope: credential.scope
       };
@@ -731,7 +734,8 @@ export class AccountSyncManager {
       encryptedPassword = encryptSecret(payload.auth.secret, this.options.encryptionKey);
       this.deleteOAuthCredential(payload.syncId);
     } else {
-      const clientId = payload.auth.provider === "google" ? this.options.googleClientId.trim() : this.options.microsoftClientId.trim();
+      const fallbackClientId = payload.auth.provider === "google" ? this.options.googleClientId.trim() : this.options.microsoftClientId.trim();
+      const clientId = payload.auth.clientId?.trim() || fallbackClientId;
       if (!clientId) throw new Error(payload.auth.provider === "google" ? "本机未配置 Google OAuth Client ID" : "本机未配置 Microsoft OAuth Client ID");
       encryptedPassword = encryptSecret(`oauth-v1:${payload.auth.provider}`, this.options.encryptionKey);
       this.writeOAuthCredential(payload.syncId, {

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-authorize-mail-provider"
+description = "Allows the desktop client to complete Google or Microsoft OAuth through a loopback callback and return renewable credentials to the authenticated app."
+commands.allow = ["authorize_mail_provider"]

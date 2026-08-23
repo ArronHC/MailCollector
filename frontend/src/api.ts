@@ -250,6 +250,17 @@ export const auth = {
 
 export type OAuthMailProvider = "google" | "microsoft";
 export type OAuthFlowStatus = { status: "pending" | "authorized" | "success" | "error"; error: string; accountId: number | null };
+export type DesktopOAuthCredential = {
+  version: 1;
+  provider: OAuthMailProvider;
+  email: string;
+  displayName: string;
+  clientId: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  scope: string;
+};
 export type ClientDevice = {
   id: string;
   name: string;
@@ -265,6 +276,7 @@ export const api = {
   providers: () => request<{ providers: MailProvider[] }>("/api/providers"),
   startOAuth: (provider: OAuthMailProvider) => request<{ flowId: string; authorizationUrl: string }>(`/api/oauth/${provider}/start`, { method: "POST" }),
   oauthFlow: (flowId: string) => request<OAuthFlowStatus>(`/api/oauth/flows/${encodeURIComponent(flowId)}`),
+  importOAuth: (credential: DesktopOAuthCredential) => request<{ account: MailAccount }>("/api/oauth/import", { method: "POST", body: JSON.stringify(credential) }),
   messages: (params: URLSearchParams) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`),
   message: (id: number) => request<{ message: MailDetail }>(`/api/messages/${id}`),
   updateMessage: (id: number, actions: MessageActions) => actions.labels !== undefined

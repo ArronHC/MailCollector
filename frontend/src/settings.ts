@@ -16,6 +16,8 @@ export interface AppSettings {
   trustedRemoteImageSenders: string[];
   keyboardShortcutsEnabled: boolean;
   markReadOnOpen: boolean;
+  googleOAuthClientId: string;
+  microsoftOAuthClientId: string;
 }
 
 const STORAGE_KEY = "mailCollectorSettings:v1";
@@ -30,7 +32,9 @@ export const defaultAppSettings: AppSettings = {
   remoteImagePolicy: "block",
   trustedRemoteImageSenders: [],
   keyboardShortcutsEnabled: true,
-  markReadOnOpen: true
+  markReadOnOpen: true,
+  googleOAuthClientId: "",
+  microsoftOAuthClientId: ""
 };
 
 const readerPositions = new Set<ReaderPosition>(["right", "bottom"]);
@@ -39,6 +43,9 @@ const remoteImagePolicies = new Set<RemoteImagePolicy>(["block", "trusted", "alw
 const fontSizes = new Set<ReadingFontSize>(["small", "medium", "large"]);
 
 function normalizeSender(value: string): string { return value.trim().toLowerCase(); }
+function normalizeClientId(value: unknown): string {
+  return typeof value === "string" ? value.trim().replace(/[\r\n\t]/g, "").slice(0, 512) : "";
+}
 
 function normalizeSettings(value: unknown): AppSettings {
   if (!value || typeof value !== "object") return { ...defaultAppSettings };
@@ -56,7 +63,9 @@ function normalizeSettings(value: unknown): AppSettings {
     remoteImagePolicy: remoteImagePolicies.has(candidate.remoteImagePolicy as RemoteImagePolicy) ? candidate.remoteImagePolicy as RemoteImagePolicy : defaultAppSettings.remoteImagePolicy,
     trustedRemoteImageSenders,
     keyboardShortcutsEnabled: typeof candidate.keyboardShortcutsEnabled === "boolean" ? candidate.keyboardShortcutsEnabled : defaultAppSettings.keyboardShortcutsEnabled,
-    markReadOnOpen: typeof candidate.markReadOnOpen === "boolean" ? candidate.markReadOnOpen : defaultAppSettings.markReadOnOpen
+    markReadOnOpen: typeof candidate.markReadOnOpen === "boolean" ? candidate.markReadOnOpen : defaultAppSettings.markReadOnOpen,
+    googleOAuthClientId: normalizeClientId(candidate.googleOAuthClientId),
+    microsoftOAuthClientId: normalizeClientId(candidate.microsoftOAuthClientId)
   };
 }
 

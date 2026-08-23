@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { Keyboard, LayoutPanelLeft, Mail, RotateCcw, Server, ShieldCheck, SlidersHorizontal, Trash2, Users, X } from "lucide-react";
-import { clearClientBackend, getMobileBackendUrl, isNativeClient } from "../mobile-backend";
+import { KeyRound, Keyboard, LayoutPanelLeft, Mail, RotateCcw, Server, ShieldCheck, SlidersHorizontal, Trash2, Users, X } from "lucide-react";
+import { clearClientBackend, getMobileBackendUrl, isNativeClient, isNativeDesktop } from "../mobile-backend";
 import { resetAppSettings, untrustRemoteImageSender, updateAppSettings, useAppSettings } from "../settings";
 import { DeviceManager } from "./DeviceManager";
 import { Modal } from "./Ui";
@@ -51,6 +51,17 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           <DeviceManager />
         </section>
       </> : null}
+
+      {isNativeDesktop() ? <section className="settings-section oauth-settings-section">
+        <header><KeyRound /><div><h3>邮箱 OAuth</h3><p>Client ID 仅保存在这台电脑，用于在系统浏览器中添加 Gmail 或 Outlook；手机不需要配置。</p></div></header>
+        <SettingRow title="Google Client ID" detail="Google Cloud 中“桌面应用”类型的公开 Client ID。">
+          <input type="text" value={settings.googleOAuthClientId} onChange={(event) => updateAppSettings({ googleOAuthClientId: event.target.value })} placeholder="*.apps.googleusercontent.com" autoComplete="off" spellCheck={false} />
+        </SettingRow>
+        <SettingRow title="Microsoft Client ID" detail="Microsoft Entra 应用注册中的应用程序（客户端）ID。">
+          <input type="text" value={settings.microsoftOAuthClientId} onChange={(event) => updateAppSettings({ microsoftOAuthClientId: event.target.value })} placeholder="00000000-0000-0000-0000-000000000000" autoComplete="off" spellCheck={false} />
+        </SettingRow>
+        <p className="oauth-settings-note">Client ID 不是密码。授权完成后，VPS通过 HTTPS 接收并加密保存持续同步所需的 OAuth 凭据；手机只读取 VPS 同步的账户和邮件。</p>
+      </section> : null}
 
       <section className="settings-section compact-section">
         <header><ShieldCheck /><div><h3>隐私</h3><p>远程图片仍通过现有 CSP 隔离策略加载，不会放开脚本、表单或网络请求。</p></div></header>

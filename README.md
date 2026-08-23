@@ -100,12 +100,7 @@ Windows 或 Android 第一次连接 VPS 时：
 
 推荐 OAuth。
 
-由于 OAuth 现在发生在 VPS，请在 Google Cloud 中把 Mail Collector 的 HTTPS 回调地址注册为允许的 redirect URI，并把 Client ID 填入：
-
-```env
-GOOGLE_OAUTH_CLIENT_ID=...
-OAUTH_REDIRECT_BASE_URL=https://mail.example.com/
-```
+在 Google Cloud 创建“桌面应用”类型的 OAuth Client ID，然后在 Windows 客户端打开“设置 → 邮箱 OAuth”，填写 Google Client ID。添加 Gmail 时，Windows 会通过系统浏览器和本机随机回环端口完成 PKCE 授权，再通过已登录的 HTTPS 会话把续期凭据交给 VPS。VPS加密保存 refresh token 和该账户对应的公开 Client ID，负责后续 IMAP/SMTP 同步；手机不需要 Client ID。
 
 也可以使用 Google 支持的应用专用密码方式连接 IMAP/SMTP。
 
@@ -113,12 +108,9 @@ OAUTH_REDIRECT_BASE_URL=https://mail.example.com/
 
 推荐 OAuth：
 
-```env
-MICROSOFT_OAUTH_CLIENT_ID=...
-OAUTH_REDIRECT_BASE_URL=https://mail.example.com/
-```
+在 Microsoft Entra 应用注册中启用公共客户端流和 `http://localhost` 回调，添加 IMAP/SMTP delegated scopes，然后在 Windows 客户端“设置 → 邮箱 OAuth”中填写 Microsoft Client ID。首次授权在 Windows 本地完成；VPS和手机都不需要单独配置 Client ID。
 
-Microsoft 应用注册中需要允许对应 redirect URI 和 IMAP/SMTP delegated scopes。
+Windows 添加完成后，账户立即进入 VPS 主库。VPS持续向邮件服务商同步，Windows和Android从同一 VPS 获取账户与邮件；这不是要求 Windows 长期在线。
 
 ### QQ / 163 / 126 / iCloud
 

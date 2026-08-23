@@ -53,7 +53,7 @@ $signingSummary = if ($mode -eq "none") {
 
 Write-Host "Release readiness summary"
 Write-Host "  Architecture:    native client -> VPS Core"
-Write-Host "  OAuth settings:  configured on VPS, not embedded in Windows"
+Write-Host "  OAuth settings:  user-configured desktop Client IDs; credentials imported to VPS"
 Write-Host "  Windows signing: $signingSummary"
 
 foreach ($warning in $warnings) {

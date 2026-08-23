@@ -339,8 +339,8 @@ export class OAuthManager {
   }
 
   private async refresh(credential: OAuthCredential): Promise<OAuthCredential> {
-    const clientId = this.clientId(credential.provider);
-    if (!clientId || clientId !== credential.clientId) throw oauthFailure("OAuth Client ID 已变化，请重新授权邮箱");
+    const clientId = credential.clientId.trim();
+    if (!clientId) throw oauthFailure("OAuth 凭据缺少 Client ID，请重新授权邮箱");
     const tokenEndpoint = credential.provider === "google"
       ? "https://oauth2.googleapis.com/token"
       : "https://login.microsoftonline.com/common/oauth2/v2.0/token";
