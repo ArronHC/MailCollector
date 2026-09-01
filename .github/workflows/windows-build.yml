@@ -177,7 +177,7 @@ jobs:
           path: release-assets
           merge-multiple: true
       - name: Publish Windows and Android packages
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
