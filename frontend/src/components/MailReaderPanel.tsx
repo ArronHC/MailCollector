@@ -44,10 +44,22 @@ export function MailHeader({ mail, onStar, onReply }: { mail: MailDetail; onStar
 function messageDocument(html: string, allowRemoteImages: boolean, readingFontSize: ReadingFontSize): string {
   const imageSources = allowRemoteImages ? "data: cid: http: https:" : "data: cid:";
   const zoom = { small: "90%", medium: "100%", large: "115%" }[readingFontSize];
-  const securityHead = `<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; img-src ${imageSources}; style-src 'unsafe-inline'; font-src data:; media-src data: cid:; frame-src 'none'; form-action 'none'; base-uri 'none'"><style>html{zoom:${zoom};}</style>`;
-  if (/<head\b[^>]*>/i.test(html)) return html.replace(/<head\b[^>]*>/i, (head) => `${head}${securityHead}`);
-  if (/<html\b[^>]*>/i.test(html)) return html.replace(/<html\b[^>]*>/i, (root) => `${root}<head><meta charset="utf-8">${securityHead}</head>`);
-  return `<!doctype html><html><head><meta charset="utf-8">${securityHead}</head><body>${html}</body></html>`;
+  const document = new DOMParser().parseFromString(html, "text/html");
+  // DOMParser supplies a head even for fragments and malformed HTML.
+  // Discard supplied policy/referrer metas and put our policy before all resources.
+  for (const meta of document.querySelectorAll("meta")) {
+    if (meta.httpEquiv.toLowerCase() === "content-security-policy" || meta.name.toLowerCase() === "referrer") meta.remove();
+  }
+  const csp = document.createElement("meta");
+  csp.httpEquiv = "Content-Security-Policy";
+  csp.content = `default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; img-src ${imageSources}; style-src 'unsafe-inline'; font-src data:; media-src data: cid:; frame-src 'none'; form-action 'none'; base-uri 'none'`;
+  const referrer = document.createElement("meta");
+  referrer.name = "referrer";
+  referrer.content = "no-referrer";
+  const style = document.createElement("style");
+  style.textContent = `html{zoom:${zoom};}`;
+  document.head.prepend(csp, referrer, style);
+  return `<!doctype html>${document.documentElement.outerHTML}`;
 }
 
 function containsRemoteImages(html: string): boolean {

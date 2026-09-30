@@ -1,4 +1,4 @@
-import { getMobileBackendUrl } from "./mobile-backend";
+import { clientStorageScope } from "./client-identity";
 
 const REVISION_KEY_PREFIX = "mailCollectorSyncRevision";
 const LEGACY_REVISION_KEY = REVISION_KEY_PREFIX;
@@ -20,8 +20,7 @@ export type SyncPullResult = {
 };
 
 function revisionKey(): string {
-  const backend = getMobileBackendUrl() || window.location.origin;
-  return `${REVISION_KEY_PREFIX}:${encodeURIComponent(backend)}`;
+  return `${REVISION_KEY_PREFIX}:${encodeURIComponent(clientStorageScope())}`;
 }
 
 export function getSyncRevision(): number {
@@ -38,6 +37,7 @@ export function setSyncRevision(revision: number): void {
 }
 
 export function resetSyncRevision(): void {
-  localStorage.removeItem(revisionKey());
-  localStorage.removeItem(LEGACY_REVISION_KEY);
+  for (const key of Object.keys(localStorage)) {
+    if (key === LEGACY_REVISION_KEY || key.startsWith(`${REVISION_KEY_PREFIX}:`)) localStorage.removeItem(key);
+  }
 }

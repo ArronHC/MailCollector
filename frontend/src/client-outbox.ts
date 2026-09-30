@@ -1,4 +1,4 @@
-import { getMobileBackendUrl } from "./mobile-backend";
+import { clientStorageScope, hasClientIdentity } from "./client-identity";
 
 const OUTBOX_KEY_PREFIX = "mailCollectorSyncOutbox";
 
@@ -18,11 +18,11 @@ type MessageStatePatch = {
 };
 
 function outboxKey(): string {
-  const backend = getMobileBackendUrl() || window.location.origin;
-  return `${OUTBOX_KEY_PREFIX}:${encodeURIComponent(backend)}`;
+  return `${OUTBOX_KEY_PREFIX}:${encodeURIComponent(clientStorageScope())}`;
 }
 
 function load(): PendingClientOperation[] {
+  if (!hasClientIdentity()) return [];
   try {
     const parsed = JSON.parse(localStorage.getItem(outboxKey()) ?? "[]") as PendingClientOperation[];
     return Array.isArray(parsed) ? parsed : [];
@@ -45,7 +45,11 @@ export function enqueueClientOperation(operation: Omit<PendingClientOperation, "
 
 export function pendingClientOperations(): PendingClientOperation[] { return load(); }
 export function removeClientOperation(id: string): void { save(load().filter((item) => item.id !== id)); }
-export function clearClientOperations(): void { localStorage.removeItem(outboxKey()); }
+export function clearClientOperations(): void {
+  for (const key of Object.keys(localStorage)) {
+    if (key === OUTBOX_KEY_PREFIX || key.startsWith(`${OUTBOX_KEY_PREFIX}:`)) localStorage.removeItem(key);
+  }
+}
 export function pendingClientOperationCount(): number { return load().length; }
 
 function statePatch(body: unknown): MessageStatePatch {

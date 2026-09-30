@@ -1,16 +1,19 @@
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions } from "./data/mailData";
-import { findCachedMessageById, readCachedResponse, writeCachedResponse } from "./client-cache";
+import { clearClientCache, findCachedMessageById, readCachedResponse, writeCachedResponse } from "./client-cache";
+import { clearClientIdentity, clientStorageScope, setClientIdentity } from "./client-identity";
 import { deviceHeaders } from "./device-info";
 import {
   applyPendingClientOperations,
+  clearClientOperations,
   enqueueClientOperation,
   pendingClientOperationCount,
   pendingClientOperations,
   removeClientOperation,
   type PendingClientOperation
 } from "./client-outbox";
-import { getSyncRevision, setSyncRevision, type SyncEvent } from "./client-sync";
+import { getSyncRevision, resetSyncRevision, setSyncRevision, type SyncEvent } from "./client-sync";
 import {
+  assertSecureApiUrl,
   clearClientSessionToken,
   clearMobileDeviceToken,
   getClientSessionToken,
@@ -41,13 +44,28 @@ function clearLocalApiKey(): void {
   localStorage.removeItem(localRememberedKey);
 }
 
-function clearAllAuth(): void {
+async function clearClientData(): Promise<void> {
+  clearClientOperations();
+  resetSyncRevision();
+  await clearClientCache();
+}
+
+async function clearAllAuth(): Promise<void> {
+  clearClientIdentity();
   clearLocalApiKey();
   clearClientSessionToken();
   clearMobileDeviceToken();
+  await clearClientData();
+}
+
+async function completeSignIn(identity: string): Promise<void> {
+  await clearClientData();
+  await setClientIdentity(identity);
 }
 
 async function fetchLocal(path: string, options: RequestInit = {}, key = localApiKey): Promise<Response> {
+  const url = resolveApiUrl(path);
+  assertSecureApiUrl(url);
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
   if (options.body) headers.set("Content-Type", "application/json");
@@ -63,7 +81,7 @@ async function fetchLocal(path: string, options: RequestInit = {}, key = localAp
     if (deviceToken) headers.set("X-Device-Token", deviceToken);
   }
 
-  return fetch(resolveApiUrl(path), {
+  return fetch(url, {
     ...options,
     headers,
     credentials: isNativeClient() ? "omit" : "include"
@@ -76,12 +94,14 @@ async function responseError(response: Response): Promise<Error> {
 }
 
 async function request<T>(path: string, options: RequestInit = {}, notifyUnauthorized = true): Promise<T> {
+  assertSecureApiUrl(resolveApiUrl(path));
+  const scope = clientStorageScope();
   const method = (options.method ?? "GET").toUpperCase();
   let response: Response;
   try {
     response = await fetchLocal(path, options);
   } catch (error) {
-    if (method === "GET") {
+    if (method === "GET" && scope === clientStorageScope()) {
       const cached = await readCachedResponse<T>(path);
       if (cached !== null) return applyPendingClientOperations(path, cached);
     }
@@ -89,14 +109,14 @@ async function request<T>(path: string, options: RequestInit = {}, notifyUnautho
   }
 
   if (response.status === 401 && notifyUnauthorized) {
-    clearAllAuth();
+    await clearAllAuth();
     window.dispatchEvent(new Event(unauthorizedEvent));
   }
   if (!response.ok) throw await responseError(response);
   if (response.status === 204) return undefined as T;
 
   const payload = await response.json() as T;
-  if (method === "GET") {
+  if (method === "GET" && scope === clientStorageScope()) {
     void writeCachedResponse(path, payload);
     return applyPendingClientOperations(path, payload);
   }
@@ -126,17 +146,18 @@ async function queueableMutation<T>(
   body: unknown,
   offlineResult: () => Promise<T>
 ): Promise<T> {
+  const scope = clientStorageScope();
   const operationId = crypto.randomUUID();
   try {
     const response = await fetchLocal(path, operationOptions(operationId, method, body));
     if (response.status === 401) {
-      clearAllAuth();
+      await clearAllAuth();
       window.dispatchEvent(new Event(unauthorizedEvent));
     }
     if (!response.ok) throw await responseError(response);
     return response.status === 204 ? undefined as T : response.json() as Promise<T>;
   } catch (error) {
-    if (!(error instanceof TypeError) || !isNativeClient()) throw error;
+    if (!(error instanceof TypeError) || !isNativeClient() || scope !== clientStorageScope() || !getClientSessionToken()) throw error;
     enqueueClientOperation({ id: operationId, method, path, body });
     return offlineResult();
   }
@@ -144,21 +165,24 @@ async function queueableMutation<T>(
 
 async function flushOutbox(): Promise<{ flushed: number; pending: number }> {
   if (!isNativeClient() || !getClientSessionToken()) return { flushed: 0, pending: pendingClientOperationCount() };
+  const scope = clientStorageScope();
   let flushed = 0;
   for (const operation of pendingClientOperations()) {
+    if (scope !== clientStorageScope()) break;
     let response: Response;
     try {
       response = await fetchLocal(operation.path, operationOptions(operation.id, operation.method, operation.body));
     } catch {
       break;
     }
+    if (scope !== clientStorageScope()) break;
     if (response.ok || response.status === 400 || response.status === 404 || response.status === 409 || response.status === 422) {
       removeClientOperation(operation.id);
       flushed += 1;
       continue;
     }
     if (response.status === 401) {
-      clearAllAuth();
+      await clearAllAuth();
       window.dispatchEvent(new Event(unauthorizedEvent));
     }
     break;
@@ -181,14 +205,17 @@ export const auth = {
   },
   restore: async () => {
     if (isNativeClient()) {
-      if (!getClientSessionToken()) return false;
+      const token = getClientSessionToken();
+      if (!token) { await clearAllAuth(); return false; }
+      // The existing native session token binds both user and server instance.
+      assertSecureApiUrl(resolveApiUrl("/api/client-auth/session"));
+      await setClientIdentity(token);
       try {
         const response = await fetchLocal("/api/client-auth/session", {}, "");
         if (response.status === 401) {
-          clearClientSessionToken();
+          await clearAllAuth();
           return false;
         }
-        if (!response.ok) return true;
         return true;
       } catch {
         return Boolean(getClientSessionToken());
@@ -197,39 +224,48 @@ export const auth = {
 
     const response = await fetchLocal("/api/auth/session");
     if (response.status === 401) {
-      clearLocalApiKey();
+      await clearAllAuth();
       return false;
     }
     if (!response.ok) throw await responseError(response);
+    const result = await response.json() as { user: { email: string } };
+    // Cookie sessions expose no instance identifier, so never reuse old data on restore.
+    await completeSignIn(JSON.stringify([result.user.email, localApiKey]));
     return true;
   },
   signIn: async (email: string, password: string) => {
-    clearAllAuth();
+    await clearAllAuth();
     if (isNativeClient()) {
       const result = await nativeAuthRequest<{ token: string; user: { email: string } }>("/api/client-auth/login", { email, password });
       setClientSessionToken(result.token);
+      await completeSignIn(result.token);
       return;
     }
-    await request<{ user: { email: string } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, false);
+    const result = await request<{ user: { email: string } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, false);
+    await completeSignIn(result.user.email);
   },
   register: async (email: string, password: string, inviteCode: string) => {
-    clearAllAuth();
+    await clearAllAuth();
     if (isNativeClient()) {
       const result = await nativeAuthRequest<{ token: string; user: { email: string } }>("/api/client-auth/register", { email, password, inviteCode });
       setClientSessionToken(result.token);
+      await completeSignIn(result.token);
       return;
     }
-    await request<{ user: { email: string } }>("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, inviteCode }) }, false);
+    const result = await request<{ user: { email: string } }>("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, inviteCode }) }, false);
+    await completeSignIn(result.user.email);
   },
   signInWithKey: async (key: string) => {
     const trimmed = key.trim();
     if (!trimmed) throw new Error("请输入访问密钥");
+    await clearAllAuth();
     try {
       const response = await fetchLocal("/api/health", {}, trimmed);
       if (!response.ok) throw new Error("未授权");
       localApiKey = trimmed;
       sessionStorage.setItem(legacyApiKey, trimmed);
       sessionStorage.setItem(localApiKeyKey, trimmed);
+      await completeSignIn(trimmed);
     } catch (error) {
       clearLocalApiKey();
       throw error;
@@ -243,7 +279,7 @@ export const auth = {
         await request<void>("/api/auth/logout", { method: "POST" }, false);
       }
     } finally {
-      clearAllAuth();
+      await clearAllAuth();
     }
   }
 };
@@ -319,11 +355,12 @@ export const api = {
   flushOutbox,
   syncPull: async () => {
     const flushed = await flushOutbox();
+    const scope = clientStorageScope();
     const after = getSyncRevision();
     const response = await fetchLocal(`/api/sync/pull?after=${after}`);
     if (!response.ok) throw await responseError(response);
     const result = await response.json() as { revision: number; events: SyncEvent[] };
-    setSyncRevision(result.revision);
+    if (scope === clientStorageScope()) setSyncRevision(result.revision);
     return { ...result, ...flushed };
   }
 };

@@ -103,6 +103,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   const [labelOpen, setLabelOpen] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [composeOpen, setComposeOpen] = useState(false);
+  const composeOpenRef = useRef(false);
   const [composeSeed, setComposeSeed] = useState<ComposeSeed>({});
   const [composeBusy, setComposeBusy] = useState(false);
   const [composeStatus, setComposeStatus] = useState("");
@@ -272,10 +273,10 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
 
   async function selectMail(mail: MailItem) {
     if (mail.kind === "draft") {
+      if (composeOpenRef.current) { toast("请先保存或关闭当前写信窗口，再打开其他草稿", "info"); return; }
       try {
         const { message } = await api.message(mail.id);
-        setComposeSeed({ draftId: message.id, accountId: message.accountId, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, body: message.textBody ?? "" });
-        setComposeOpen(true);
+        openCompose({ draftId: message.id, accountId: message.accountId, to: message.to, cc: message.cc, bcc: message.bcc, subject: message.subject, body: message.textBody ?? "" });
       } catch (error) { toast(error instanceof Error ? error.message : "无法打开草稿", "error"); }
       return;
     }
@@ -359,7 +360,11 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     setCheckedIds(new Set(mails.filter((mail) => where === "all" || (where === "read" && mail.isRead) || (where === "unread" && !mail.isRead) || (where === "starred" && mail.isStarred)).map((mail) => mail.id)));
   }
 
-  function openCompose(seed: ComposeSeed = {}) { setComposeSeed(seed); setComposeStatus(""); setComposeOpen(true); }
+  function openCompose(seed: ComposeSeed = {}) {
+    if (composeOpenRef.current) { toast("请先保存或关闭当前写信窗口，再打开新的邮件或草稿", "info"); return; }
+    composeOpenRef.current = true;
+    setComposeSeed(seed); setComposeStatus(""); setComposeOpen(true);
+  }
   function toggleReaderExpanded() { transitionState(() => setReaderExpanded((value) => !value), "reader"); }
   function closeReader() {
     detailRequestSequence.current += 1;
@@ -394,6 +399,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     try {
       if (discard) { if (draftId) await api.deleteMessage(draftId); toast("草稿已舍弃", "info"); }
       else if (content.to.length || content.cc.length || content.bcc.length || content.subject || content.body) { if (draftId) await api.updateDraft(draftId, content); else await api.createDraft(content); toast("草稿已保存"); }
+      composeOpenRef.current = false;
       setComposeOpen(false); setComposeSeed({}); await Promise.all([loadMetadata(), loadMessages()]);
     } catch (error) { setComposeStatus(error instanceof Error ? error.message : "保存草稿失败"); } finally { setComposeBusy(false); }
   }
@@ -402,6 +408,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     setComposeBusy(true); setComposeStatus("");
     try {
       if (draftId) { await api.updateDraft(draftId, content); await api.sendDraft(draftId); } else await api.send(content);
+      composeOpenRef.current = false;
       setComposeOpen(false); setComposeSeed({}); await Promise.all([loadMetadata(), loadMessages()]); toast("邮件已发送");
     } catch (error) { const text = error instanceof Error ? error.message : "发送失败"; setComposeStatus(text); toast(text, "error"); } finally { setComposeBusy(false); }
   }

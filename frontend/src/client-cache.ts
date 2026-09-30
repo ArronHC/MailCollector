@@ -1,4 +1,4 @@
-import { getMobileBackendUrl } from "./mobile-backend";
+import { clientStorageScope, hasClientIdentity } from "./client-identity";
 
 const DATABASE_NAME = "mail-collector-client-cache";
 const DATABASE_VERSION = 1;
@@ -11,13 +11,11 @@ type CacheRecord<T> = {
 };
 
 function cacheKey(path: string): string {
-  const backend = getMobileBackendUrl() || window.location.origin;
-  return `${backend}|${path}`;
+  return `${clientStorageScope()}|${path}`;
 }
 
 function cachePrefix(): string {
-  const backend = getMobileBackendUrl() || window.location.origin;
-  return `${backend}|`;
+  return `${clientStorageScope()}|`;
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -35,13 +33,15 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 export async function readCachedResponse<T>(path: string): Promise<T | null> {
-  if (!("indexedDB" in window)) return null;
+  if (!("indexedDB" in window) || !hasClientIdentity()) return null;
+  const key = cacheKey(path);
   try {
     const database = await openDatabase();
+    if (!hasClientIdentity() || key !== cacheKey(path)) { database.close(); return null; }
     return await new Promise<T | null>((resolve, reject) => {
       const transaction = database.transaction(STORE_NAME, "readonly");
-      const request = transaction.objectStore(STORE_NAME).get(cacheKey(path));
-      request.onsuccess = () => resolve((request.result as CacheRecord<T> | undefined)?.value ?? null);
+      const request = transaction.objectStore(STORE_NAME).get(key);
+      request.onsuccess = () => resolve(hasClientIdentity() && key === cacheKey(path) ? (request.result as CacheRecord<T> | undefined)?.value ?? null : null);
       request.onerror = () => reject(request.error ?? new Error("读取本地邮件缓存失败"));
       transaction.oncomplete = () => database.close();
       transaction.onabort = () => database.close();
@@ -52,13 +52,14 @@ export async function readCachedResponse<T>(path: string): Promise<T | null> {
 }
 
 export async function findCachedMessageById<T extends { id: number }>(id: number): Promise<T | null> {
-  if (!("indexedDB" in window)) return null;
+  if (!("indexedDB" in window) || !hasClientIdentity()) return null;
+  const prefix = cachePrefix();
   try {
     const database = await openDatabase();
+    if (!hasClientIdentity() || prefix !== cachePrefix()) { database.close(); return null; }
     return await new Promise<T | null>((resolve) => {
       const transaction = database.transaction(STORE_NAME, "readonly");
       const request = transaction.objectStore(STORE_NAME).openCursor();
-      const prefix = cachePrefix();
       let found: T | null = null;
       request.onsuccess = () => {
         const cursor = request.result;
@@ -84,11 +85,11 @@ export async function findCachedMessageById<T extends { id: number }>(id: number
       };
       transaction.oncomplete = () => {
         database.close();
-        resolve(found);
+        resolve(hasClientIdentity() && prefix === cachePrefix() ? found : null);
       };
       transaction.onerror = transaction.onabort = () => {
         database.close();
-        resolve(found);
+        resolve(null);
       };
     });
   } catch {
@@ -97,12 +98,14 @@ export async function findCachedMessageById<T extends { id: number }>(id: number
 }
 
 export async function writeCachedResponse<T>(path: string, value: T): Promise<void> {
-  if (!("indexedDB" in window)) return;
+  if (!("indexedDB" in window) || !hasClientIdentity()) return;
+  const key = cacheKey(path);
   try {
     const database = await openDatabase();
+    if (!hasClientIdentity() || key !== cacheKey(path)) { database.close(); return; }
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(STORE_NAME, "readwrite");
-      transaction.objectStore(STORE_NAME).put({ key: cacheKey(path), value, savedAt: Date.now() } satisfies CacheRecord<T>);
+      transaction.objectStore(STORE_NAME).put({ key, value, savedAt: Date.now() } satisfies CacheRecord<T>);
       transaction.oncomplete = () => {
         database.close();
         resolve();

@@ -23,12 +23,20 @@ export function isNativeClient(): boolean {
   return isNativeDesktop() || isNativeMobile();
 }
 
+export function assertSecureApiUrl(value: string): void {
+  const url = new URL(value, window.location.href);
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("服务器地址必须使用 http:// 或 https://");
+  if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+    throw new Error("拒绝连接远程 HTTP 服务器：登录密码、访问密钥和邮件账户凭据存在明文传输风险，请使用 HTTPS；HTTP 仅允许 localhost、127.0.0.1 或 ::1 本地开发地址。");
+  }
+}
+
 export function normalizeMobileBackendUrl(value: string): string {
   let input = value.trim();
   if (!input) throw new Error("请输入 Mail Collector VPS 地址");
   if (!/^https?:\/\//i.test(input)) input = `https://${input}`;
   const url = new URL(input);
-  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("VPS 地址必须使用 http:// 或 https://");
+  assertSecureApiUrl(url.href);
   url.hash = "";
   url.search = "";
   return url.toString().replace(/\/+$/, "");
