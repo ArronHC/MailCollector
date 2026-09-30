@@ -1,8 +1,11 @@
+import { timedFetch } from "./request-runtime";
 import { normalizeMobileBackendUrl, resolveApiUrl, setMobileBackendUrl, setMobileDeviceToken } from "./mobile-backend";
 
 const pairingPrivateKeyKey = "mailCollectorPairingPrivateKey";
 const pairingSessionKey = "mailCollectorPairingSession";
 const mobileRecoveryKeyKey = "mailCollectorMobileRecoveryKey";
+let mobileRecoveryKey = "";
+window.addEventListener("mail-collector:clear-sensitive", () => { mobileRecoveryKey = ""; clearPairingSession(); });
 
 export type PairingSession = {
   pairingId: string;
@@ -94,7 +97,7 @@ async function jsonFetch<T>(url: string, options: RequestInit = {}): Promise<T> 
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
   if (options.body) headers.set("Content-Type", "application/json");
-  const response = await fetch(url, { ...options, headers, credentials: "include" });
+  const response = await timedFetch(url, { ...options, headers, credentials: "include" });
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as { error?: string };
     throw new Error(body.error ?? `请求失败 (${response.status})`);
@@ -139,6 +142,7 @@ export function loadPairingSession(): PairingSession | null {
   if (!value) return null;
   try {
     const session = JSON.parse(value) as PairingSession;
+    if (Date.parse(session.expiresAt) <= Date.now()) { clearPairingSession(); return null; }
     return session.pairingId && session.joinToken && session.serviceUrl ? session : null;
   } catch {
     return null;
@@ -153,12 +157,13 @@ export function clearPairingSession(): void {
 export function applyPairingBundle(bundle: PairingBundle): void {
   setMobileBackendUrl(normalizeMobileBackendUrl(bundle.backendUrl));
   setMobileDeviceToken(bundle.deviceToken);
-  if (bundle.recoveryKey) localStorage.setItem(mobileRecoveryKeyKey, bundle.recoveryKey);
+  mobileRecoveryKey = bundle.recoveryKey || "";
+  localStorage.removeItem(mobileRecoveryKeyKey);
   clearPairingSession();
 }
 
 export function getMobileRecoveryKey(): string {
-  return localStorage.getItem(mobileRecoveryKeyKey) ?? "";
+  return mobileRecoveryKey;
 }
 
 export function pairingServiceUrl(): string {

@@ -1,5 +1,5 @@
 import { Archive, ArrowLeft, Clock3, ExternalLink, Inbox, Mail, MailOpen, Maximize2, Minimize2, MoreVertical, MoveRight, Printer, Reply, Star, Tag, Trash2, TriangleAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState } from "react";
 import type { MailDetail, MailLabel, MessageActions, MessageFolder } from "../data/mailData";
 import { formatDetailTime, messageSource, sourceNames } from "../data/mailData";
 import { snoozeIso } from "../data/snooze";
@@ -28,7 +28,7 @@ export function SenderInfo({ mail, onStar, onReply }: { mail: MailDetail; onStar
   const sender = mail.kind === "sent" || mail.kind === "draft" ? mail.accountName : mail.fromName || mail.fromAddress || "未知发件人";
   const initial = sender.trim().slice(0, 1).toUpperCase();
   const source = messageSource(mail);
-  return <div className="sender-info"><div className="google-avatar">{initial}</div><div className="sender-copy"><div className="sender-first-line"><strong>{sender}</strong>{mail.fromAddress ? <span className="sender-address">&lt;{mail.fromAddress}&gt;</span> : null}<span className="from-source">来自 <b>{sourceNames[source]}</b></span></div><button className="recipient interactive" onClick={() => setDetails((value) => !value)}>收件人：{mail.toText || mail.accountEmail} <span className={details ? "rotated" : ""}>⌄</span></button>{details ? <div className="recipient-details"><dl><div><dt>发件人</dt><dd>{mail.fromAddress || mail.accountEmail}</dd></div><div><dt>收件人</dt><dd>{mail.to.join(", ") || mail.toText || mail.accountEmail}</dd></div>{mail.cc.length ? <div><dt>抄送</dt><dd>{mail.cc.join(", ")}</dd></div> : null}<div><dt>日期</dt><dd>{new Date(mail.receivedAt).toLocaleString("zh-CN")}</dd></div></dl></div> : null}</div><div className="sender-actions"><time>{formatDetailTime(mail.receivedAt)}</time><button className={`interactive${mail.isStarred ? "active" : ""}`} onClick={onStar} aria-label="切换星标"><Star fill={mail.isStarred ? "currentColor" : "none"} /></button><button className="interactive" aria-label="回复" onClick={onReply}><Reply /></button><Popover align="right" trigger={() => <button className="interactive" aria-label="更多"><MoreVertical /></button>}>{(close) => <><MenuButton icon={<Reply />} label="回复" onClick={() => { onReply(); close(); }} /><MenuButton icon={<Printer />} label="打印" onClick={() => { window.print(); close(); }} /></>}</Popover></div></div>;
+  return <div className="sender-info"><div className="google-avatar">{initial}</div><div className="sender-copy"><div className="sender-first-line"><strong>{sender}</strong>{mail.fromAddress ? <span className="sender-address">&lt;{mail.fromAddress}&gt;</span> : null}<span className="from-source">来自 <b>{sourceNames[source]}</b></span></div><button className="recipient interactive" onClick={() => setDetails((value) => !value)}>收件人：{mail.toText || mail.accountEmail} <span className={details ? "rotated" : ""}>⌄</span></button>{details ? <div className="recipient-details"><dl><div><dt>发件人</dt><dd>{mail.fromAddress || mail.accountEmail}</dd></div><div><dt>收件人</dt><dd>{(mail.to ?? []).join(", ") || mail.toText || mail.accountEmail}</dd></div>{mail.cc?.length ? <div><dt>抄送</dt><dd>{mail.cc.join(", ")}</dd></div> : null}<div><dt>日期</dt><dd>{new Date(mail.receivedAt).toLocaleString("zh-CN")}</dd></div></dl></div> : null}</div><div className="sender-actions"><time>{formatDetailTime(mail.receivedAt)}</time><button className={`interactive${mail.isStarred ? "active" : ""}`} onClick={onStar} aria-label="切换星标"><Star fill={mail.isStarred ? "currentColor" : "none"} /></button><button className="interactive" aria-label="回复" onClick={onReply}><Reply /></button><Popover align="right" trigger={() => <button className="interactive" aria-label="更多"><MoreVertical /></button>}>{(close) => <><MenuButton icon={<Reply />} label="回复" onClick={() => { onReply(); close(); }} /><MenuButton icon={<Printer />} label="打印" onClick={() => { window.print(); close(); }} /></>}</Popover></div></div>;
 }
 
 function folderName(mail: MailDetail): string {
@@ -89,7 +89,17 @@ export function EmailFooter({ mail }: { mail: MailDetail }) {
 }
 
 interface ReaderProps { mail: MailDetail | null; loading: boolean; error: string; labels: MailLabel[]; expanded: boolean; onToggleExpanded: () => void; onAction: (actions: MessageActions) => void; onDelete: () => void; onStar: () => void; onReply: () => void; onBack: () => void; }
-export function MailReaderPanel({ mail, loading, error, labels, expanded, onToggleExpanded, onAction, onDelete, onStar, onReply, onBack }: ReaderProps) {
+class ReaderBoundary extends Component<{ children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? <div className="reader-state error-state">邮件详情无法显示，请返回后重新打开。</div> : this.props.children; }
+}
+
+export function MailReaderPanel(props: ReaderProps) {
+  return <ReaderBoundary key={`${props.mail?.id ?? "none"}-${props.loading}-${props.error}`}><ReaderContent {...props} /></ReaderBoundary>;
+}
+
+function ReaderContent({ mail, loading, error, labels, expanded, onToggleExpanded, onAction, onDelete, onStar, onReply, onBack }: ReaderProps) {
   useEffect(() => {
     if (!expanded) return;
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") onToggleExpanded(); };
@@ -97,5 +107,5 @@ export function MailReaderPanel({ mail, loading, error, labels, expanded, onTogg
     return () => document.removeEventListener("keydown", close);
   }, [expanded, onToggleExpanded]);
   const contentKey = loading ? `loading-${mail?.id ?? "none"}` : error ? `error-${mail?.id ?? "none"}` : mail ? `mail-${mail.id}` : "empty";
-  return <section className={`mail-reader-panel${expanded ? " reader-expanded" : ""}`}><MailReaderToolbar mail={mail} labels={labels} expanded={expanded} onBack={onBack} onAction={onAction} onDelete={onDelete} onPrint={() => window.print()} onToggleExpanded={onToggleExpanded} onOpenWindow={() => { if (mail) window.open(`/?message=${mail.id}`, "_blank", "noopener"); }} /><div className="reader-scroll" key={contentKey}>{loading ? <div className="reader-state loading-pulse">正在读取邮件...</div> : error ? <div className="reader-state error-state"><strong>无法读取邮件</strong><span>{error}</span></div> : mail ? <div className="reader-enter"><MailHeader mail={mail} onStar={onStar} onReply={onReply} /><div className="reader-message"><RealEmailContent mail={mail} /><EmailFooter mail={mail} /></div></div> : <div className="reader-empty"><Mail size={42} /><h2>选择一封邮件</h2><p>邮件正文将在此处安全显示。</p></div>}</div></section>;
+  return <section className={`mail-reader-panel${expanded ? " reader-expanded" : ""}`}><MailReaderToolbar key={contentKey} mail={loading || error ? null : mail} labels={labels} expanded={expanded} onBack={onBack} onAction={onAction} onDelete={onDelete} onPrint={() => window.print()} onToggleExpanded={onToggleExpanded} onOpenWindow={() => { if (mail) window.open(`/?message=${mail.id}`, "_blank", "noopener"); }} /><div className="reader-scroll" key={contentKey}>{loading ? <div className="reader-state loading-pulse">正在读取邮件...</div> : error ? <div className="reader-state error-state"><strong>无法读取邮件</strong><span>{error}</span></div> : mail ? <div className="reader-enter"><MailHeader mail={mail} onStar={onStar} onReply={onReply} /><div className="reader-message"><RealEmailContent mail={mail} /><EmailFooter mail={mail} /></div></div> : <div className="reader-empty"><Mail size={42} /><h2>选择一封邮件</h2><p>邮件正文将在此处安全显示。</p></div>}</div></section>;
 }

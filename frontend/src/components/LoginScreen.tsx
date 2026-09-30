@@ -6,15 +6,17 @@ import { CollectorMark } from "./BrandIcons";
 type AuthMode = "login" | "register" | "key";
 
 interface LoginScreenProps {
-  registered: boolean;
+  registered: boolean | null;
+  statusError: string;
+  onRetry: () => void;
   onSignIn: (email: string, password: string) => Promise<void>;
   onRegister: (email: string, password: string, inviteCode: string) => Promise<void>;
   onKeySignIn: (key: string) => Promise<void>;
 }
 
-export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn }: LoginScreenProps) {
+export function LoginScreen({ registered, statusError, onRetry, onSignIn, onRegister, onKeySignIn }: LoginScreenProps) {
   const nativeClient = isNativeClient();
-  const [mode, setMode] = useState<AuthMode>(registered ? "login" : "register");
+  const [mode, setMode] = useState<AuthMode>(registered === false ? "register" : "login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -25,7 +27,7 @@ export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn }: L
   const [error, setError] = useState("");
 
   useEffect(() => {
-    setMode(registered ? "login" : "register");
+    setMode(registered === false ? "register" : "login");
     setError("");
   }, [registered]);
 
@@ -88,6 +90,7 @@ export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn }: L
         <span className="login-kicker">{content.kicker}</span>
         <h2>{content.title}</h2>
         <p>{content.description}</p>
+        {statusError ? <div className="error-state" role="alert"><p>无法确定注册状态：{statusError}</p><button type="button" onClick={onRetry} disabled={busy}>重试查询</button><p>也可使用已有管理员账户登录。</p></div> : null}
         <div className="login-fields">
           {mode !== "key" ? <label className="login-field"><span>邮箱</span><div><AtSign /><input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" autoFocus /></div></label> : null}
           {mode !== "key" ? <label className="login-field"><span>密码</span><div><LockKeyhole /><input type={visible ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={mode === "register" ? "至少 10 个字符" : "输入密码"} autoComplete={mode === "register" ? "new-password" : "current-password"} autoFocus={mode === "login"} /><button type="button" onClick={() => setVisible((value) => !value)} aria-label={visible ? "隐藏密码" : "显示密码"}>{visible ? <EyeOff /> : <Eye />}</button></div></label> : null}
@@ -97,12 +100,14 @@ export function LoginScreen({ registered, onSignIn, onRegister, onKeySignIn }: L
         </div>
         <div className={`login-error${error ? " visible" : ""}`} aria-live="polite">{error}</div>
         <button className="login-submit" type="submit" disabled={!canSubmit || busy}><span>{content.action}</span><ArrowRight /></button>
-        {!nativeClient ? <div className="login-alternatives">
-          {mode === "login" ? <button type="button" onClick={() => switchMode("key")}>使用启动密钥登录</button> : null}
+        <div className="login-alternatives">
+          {mode !== "login" ? <button type="button" onClick={() => switchMode("login")}>使用管理员账户登录</button> : null}
+          {mode !== "register" && registered === false ? <button type="button" onClick={() => switchMode("register")}>首次注册</button> : null}
+          {!nativeClient && mode === "login" ? <button type="button" onClick={() => switchMode("key")}>使用启动密钥登录</button> : null}
           {mode === "key" && registered ? <button type="button" onClick={() => switchMode("login")}>使用管理员账户登录</button> : null}
           {mode === "key" && !registered ? <button type="button" onClick={() => switchMode("register")}>返回首次注册</button> : null}
-          {mode === "register" ? <button type="button" onClick={() => switchMode("key")}>暂时使用启动密钥登录</button> : null}
-        </div> : null}
+          {!nativeClient && mode === "register" ? <button type="button" onClick={() => switchMode("key")}>暂时使用启动密钥登录</button> : null}
+        </div>
         <footer><ShieldCheck /> {mode === "register" ? "邀请码只用于首次创建管理员账户" : nativeClient ? "安全连接至你的 VPS Mail Collector" : "安全连接至 Mail Collector 服务"}</footer>
       </form>
     </section>

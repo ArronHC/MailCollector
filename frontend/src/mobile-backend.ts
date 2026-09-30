@@ -3,6 +3,16 @@ const LEGACY_MOBILE_BACKEND_KEY = "mailCollectorMobileBackendUrl";
 const MOBILE_DEVICE_TOKEN_KEY = "mailCollectorMobileDeviceToken";
 const CLIENT_SESSION_KEY = "mailCollectorClientSessionToken";
 
+// Long-lived credentials stay in memory. Legacy plaintext persistence is purged,
+// not restored. Durable native login requires a system credential store.
+let clientSessionToken = "";
+let mobileDeviceToken = "";
+for (const key of [CLIENT_SESSION_KEY, MOBILE_DEVICE_TOKEN_KEY, "mailCollectorMobileRecoveryKey"]) {
+  localStorage.removeItem(key);
+  sessionStorage.removeItem(key);
+}
+window.addEventListener("mail-collector:clear-sensitive", () => { clientSessionToken = ""; mobileDeviceToken = ""; });
+
 type CapacitorBridge = { isNativePlatform?: () => boolean; getPlatform?: () => string };
 
 function capacitorBridge(): CapacitorBridge | undefined {
@@ -62,33 +72,36 @@ export function clearClientBackend(): void {
 }
 
 export function getClientSessionToken(): string {
-  return localStorage.getItem(CLIENT_SESSION_KEY) ?? "";
+  return clientSessionToken;
 }
 
 export function setClientSessionToken(value: string): string {
   const token = value.trim();
   if (token.length < 24) throw new Error("登录凭证无效");
-  localStorage.setItem(CLIENT_SESSION_KEY, token);
+  clientSessionToken = token;
   return token;
 }
 
 export function clearClientSessionToken(): void {
+  clientSessionToken = "";
   localStorage.removeItem(CLIENT_SESSION_KEY);
 }
 
 export function getMobileDeviceToken(): string {
-  return localStorage.getItem(MOBILE_DEVICE_TOKEN_KEY) ?? "";
+  return mobileDeviceToken;
 }
 
 export function setMobileDeviceToken(value: string): string {
   const token = value.trim();
   if (token.length < 24) throw new Error("设备凭证无效");
-  localStorage.setItem(MOBILE_DEVICE_TOKEN_KEY, token);
+  mobileDeviceToken = token;
   return token;
 }
 
 export function clearMobileDeviceToken(): void {
+  mobileDeviceToken = "";
   localStorage.removeItem(MOBILE_DEVICE_TOKEN_KEY);
+  window.dispatchEvent(new Event("mail-collector:clear-sensitive"));
 }
 
 export function resolveApiUrl(path: string): string {

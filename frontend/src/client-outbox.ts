@@ -8,6 +8,7 @@ export type PendingClientOperation = {
   path: string;
   body?: unknown;
   createdAt: string;
+  failure?: { status: number; reason: string; failedAt: string };
 };
 
 type MessageStatePatch = {
@@ -32,17 +33,26 @@ function load(): PendingClientOperation[] {
 }
 
 function save(items: PendingClientOperation[]): void {
-  localStorage.setItem(outboxKey(), JSON.stringify(items.slice(-500)));
+  localStorage.setItem(outboxKey(), JSON.stringify(items));
 }
 
 export function enqueueClientOperation(operation: Omit<PendingClientOperation, "createdAt"> & { createdAt?: string }): PendingClientOperation {
   const existing = load().find((item) => item.id === operation.id);
   if (existing) return existing;
   const item: PendingClientOperation = { ...operation, createdAt: operation.createdAt ?? new Date().toISOString() };
+  if (load().length >= 500) throw new Error("离线操作队列已满（500 条），本次操作未保存；请联网同步后重试");
   save([...load(), item]);
   return item;
 }
 
+export const outboxFailureEvent = "mail-collector:outbox-failure";
+export function markClientOperationFailed(id: string, status: number, reason: string): void {
+  save(load().map((item) => item.id === id ? { ...item, failure: { status, reason, failedAt: new Date().toISOString() } } : item));
+  window.dispatchEvent(new CustomEvent(outboxFailureEvent, { detail: { id, reason } }));
+}
+export function retryFailedClientOperations(): void {
+  save(load().map(({ failure: _failure, ...item }) => item));
+}
 export function pendingClientOperations(): PendingClientOperation[] { return load(); }
 export function removeClientOperation(id: string): void { save(load().filter((item) => item.id !== id)); }
 export function clearClientOperations(): void {
@@ -67,6 +77,7 @@ function pendingState(): { patches: Map<number, MessageStatePatch>; deletedIds: 
   const patches = new Map<number, MessageStatePatch>();
   const deletedIds = new Set<number>();
   for (const operation of load()) {
+    if (operation.failure) continue;
     const single = operation.path.match(/^\/api\/messages\/(\d+)$/);
     if (single && operation.method === "DELETE") {
       deletedIds.add(Number(single[1]));
@@ -99,16 +110,31 @@ export function applyPendingClientOperations<T>(path: string, value: T): T {
   const result = value as Record<string, unknown>;
 
   if (Array.isArray(result.messages)) {
-    let messages = result.messages.filter((message) => !message || typeof message !== "object" || !deletedIds.has(Number((message as Record<string, unknown>).id))).map((message) => message && typeof message === "object" ? applyPatch(message as Record<string, unknown>, patches) : message);
-    const query = path.includes("?") ? new URLSearchParams(path.slice(path.indexOf("?") + 1)) : null;
-    const view = query?.get("view");
-    if (view === "inbox" || view === "archive" || view === "trash" || view === "spam") messages = messages.filter((message) => !message || typeof message !== "object" || (message as Record<string, unknown>).folder === view);
-    return { ...result, messages } as T;
+    const query = new URLSearchParams(path.split("?")[1] ?? "");
+    const view = query.get("view");
+    const matches = (message: Record<string, unknown>) => {
+      if (deletedIds.has(Number(message.id))) return false;
+      const snoozed = typeof message.snoozedUntil === "string" && Date.parse(message.snoozedUntil) > Date.now();
+      if (["inbox", "archive", "trash", "spam"].includes(view ?? "") && (message.kind !== "received" || message.folder !== view || (view === "inbox" && snoozed))) return false;
+      if (view === "snoozed" && (message.kind !== "received" || !snoozed)) return false;
+      if (view === "sent" && message.kind !== "sent") return false;
+      if (view === "drafts" && message.kind !== "draft") return false;
+      if (query.get("readState") === "unread" && message.isRead) return false;
+      if (query.get("readState") === "read" && !message.isRead) return false;
+      if (query.has("starred") && Boolean(message.isStarred) !== (query.get("starred") === "true")) return false;
+      return true;
+    };
+    const messages = result.messages.map((message) => message && typeof message === "object" ? applyPatch(message as Record<string, unknown>, patches) : message)
+      .filter((message) => message && typeof message === "object" && matches(message as Record<string, unknown>));
+    // Adjust the server total for rows removed from this cached page. Uncached
+    // pages cannot be reconstructed offline; never invent missing rows.
+    const removed = result.messages.length - messages.length;
+    return { ...result, messages, total: Math.max(0, Number(result.total ?? result.messages.length) - removed) } as T;
   }
 
   if (result.message && typeof result.message === "object") {
     const id = Number((result.message as Record<string, unknown>).id);
-    if (deletedIds.has(id)) return value;
+    if (deletedIds.has(id)) throw new Error("此邮件已在离线操作中永久删除");
     return { ...result, message: applyPatch(result.message as Record<string, unknown>, patches) } as T;
   }
   return value;

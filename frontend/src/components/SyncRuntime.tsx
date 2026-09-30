@@ -8,12 +8,14 @@ export function SyncRuntime() {
   useEffect(() => {
     let cancelled = false;
     let running = false;
+    let controller: AbortController | null = null;
 
     const pulse = async () => {
       if (cancelled || running || !isNativeClient() || !getClientSessionToken()) return;
       running = true;
+      controller = new AbortController();
       try {
-        const result = await api.syncPull();
+        const result = await api.syncPull(controller.signal);
         if (!cancelled && (result.events.length > 0 || result.flushed > 0)) {
           // MailboxApp already treats focus as a request to refresh its visible state.
           // Reusing that path keeps the sync runtime decoupled from mailbox UI state.
@@ -38,6 +40,7 @@ export function SyncRuntime() {
 
     return () => {
       cancelled = true;
+      controller?.abort();
       window.clearInterval(timer);
       window.removeEventListener("online", online);
       document.removeEventListener("visibilitychange", visibility);

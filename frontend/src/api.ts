@@ -1,5 +1,6 @@
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions } from "./data/mailData";
-import { clearClientCache, findCachedMessageById, readCachedResponse, writeCachedResponse } from "./client-cache";
+import { timedFetch, isRequestAborted } from "./request-runtime";
+import { cacheGeneration, clearClientCache, findCachedMessageById, readCachedResponse, writeCachedResponse } from "./client-cache";
 import { clearClientIdentity, clientStorageScope, setClientIdentity } from "./client-identity";
 import { deviceHeaders } from "./device-info";
 import {
@@ -9,6 +10,7 @@ import {
   pendingClientOperationCount,
   pendingClientOperations,
   removeClientOperation,
+  markClientOperationFailed,
   type PendingClientOperation
 } from "./client-outbox";
 import { getSyncRevision, resetSyncRevision, setSyncRevision, type SyncEvent } from "./client-sync";
@@ -81,7 +83,7 @@ async function fetchLocal(path: string, options: RequestInit = {}, key = localAp
     if (deviceToken) headers.set("X-Device-Token", deviceToken);
   }
 
-  return fetch(url, {
+  return timedFetch(url, {
     ...options,
     headers,
     credentials: isNativeClient() ? "omit" : "include"
@@ -97,11 +99,12 @@ async function request<T>(path: string, options: RequestInit = {}, notifyUnautho
   assertSecureApiUrl(resolveApiUrl(path));
   const scope = clientStorageScope();
   const method = (options.method ?? "GET").toUpperCase();
+  const generation = cacheGeneration();
   let response: Response;
   try {
     response = await fetchLocal(path, options);
   } catch (error) {
-    if (method === "GET" && scope === clientStorageScope()) {
+    if (!isRequestAborted(error) && method === "GET" && scope === clientStorageScope()) {
       const cached = await readCachedResponse<T>(path);
       if (cached !== null) return applyPendingClientOperations(path, cached);
     }
@@ -113,11 +116,12 @@ async function request<T>(path: string, options: RequestInit = {}, notifyUnautho
     window.dispatchEvent(new Event(unauthorizedEvent));
   }
   if (!response.ok) throw await responseError(response);
+  if (method !== "GET") await clearClientCache();
   if (response.status === 204) return undefined as T;
 
   const payload = await response.json() as T;
   if (method === "GET" && scope === clientStorageScope()) {
-    void writeCachedResponse(path, payload);
+    void writeCachedResponse(path, payload, generation);
     return applyPendingClientOperations(path, payload);
   }
   return payload;
@@ -155,6 +159,7 @@ async function queueableMutation<T>(
       window.dispatchEvent(new Event(unauthorizedEvent));
     }
     if (!response.ok) throw await responseError(response);
+    await clearClientCache();
     return response.status === 204 ? undefined as T : response.json() as Promise<T>;
   } catch (error) {
     if (!(error instanceof TypeError) || !isNativeClient() || scope !== clientStorageScope() || !getClientSessionToken()) throw error;
@@ -163,22 +168,35 @@ async function queueableMutation<T>(
   }
 }
 
-async function flushOutbox(): Promise<{ flushed: number; pending: number }> {
+async function flushOutbox(signal?: AbortSignal): Promise<{ flushed: number; pending: number }> {
   if (!isNativeClient() || !getClientSessionToken()) return { flushed: 0, pending: pendingClientOperationCount() };
   const scope = clientStorageScope();
   let flushed = 0;
   for (const operation of pendingClientOperations()) {
-    if (scope !== clientStorageScope()) break;
+    if (scope !== clientStorageScope() || signal?.aborted) break;
+    if (operation.failure) continue;
     let response: Response;
     try {
-      response = await fetchLocal(operation.path, operationOptions(operation.id, operation.method, operation.body));
+      response = await fetchLocal(operation.path, { ...operationOptions(operation.id, operation.method, operation.body), signal });
     } catch {
       break;
     }
     if (scope !== clientStorageScope()) break;
-    if (response.ok || response.status === 400 || response.status === 404 || response.status === 409 || response.status === 422) {
+    if (response.ok) {
+      const result = response.status === 204 ? null : await response.json().catch(() => null) as { missingIds?: number[] } | null;
+      if (result?.missingIds?.length) {
+        markClientOperationFailed(operation.id, 404, `批量操作部分失败，未找到邮件：${result.missingIds.join(", ")}。重试前请核对这些邮件。`);
+        await clearClientCache();
+        continue;
+      }
+      await clearClientCache();
       removeClientOperation(operation.id);
       flushed += 1;
+      continue;
+    }
+    if ([400, 404, 409, 422].includes(response.status)) {
+      const error = await responseError(response);
+      markClientOperationFailed(operation.id, response.status, response.status === 409 ? `离线操作冲突：${error.message}。请核对服务器状态后再重试。` : `离线操作失败：${error.message}`);
       continue;
     }
     if (response.status === 401) {
@@ -195,14 +213,7 @@ function onlineMessageMutation<T>(path: string, method: "PATCH" | "POST", body: 
 }
 
 export const auth = {
-  status: async () => {
-    try {
-      return await request<{ registered: boolean }>("/api/auth/status", {}, false);
-    } catch (error) {
-      if (isNativeClient() && getClientSessionToken()) return { registered: true };
-      throw error;
-    }
-  },
+  status: () => request<{ registered: boolean }>("/api/auth/status", {}, false),
   restore: async () => {
     if (isNativeClient()) {
       const token = getClientSessionToken();
@@ -308,13 +319,13 @@ export type ClientDevice = {
 };
 
 export const api = {
-  accounts: () => request<{ accounts: MailAccount[] }>("/api/accounts"),
+  accounts: (signal?: AbortSignal) => request<{ accounts: MailAccount[] }>("/api/accounts", { signal }),
   providers: () => request<{ providers: MailProvider[] }>("/api/providers"),
   startOAuth: (provider: OAuthMailProvider) => request<{ flowId: string; authorizationUrl: string }>(`/api/oauth/${provider}/start`, { method: "POST" }),
   oauthFlow: (flowId: string) => request<OAuthFlowStatus>(`/api/oauth/flows/${encodeURIComponent(flowId)}`),
   importOAuth: (credential: DesktopOAuthCredential) => request<{ account: MailAccount }>("/api/oauth/import", { method: "POST", body: JSON.stringify(credential) }),
-  messages: (params: URLSearchParams) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`),
-  message: (id: number) => request<{ message: MailDetail }>(`/api/messages/${id}`),
+  messages: (params: URLSearchParams, signal?: AbortSignal) => request<{ messages: MailItem[]; total: number }>(`/api/messages?${params}`, { signal }),
+  message: (id: number, signal?: AbortSignal) => request<{ message: MailDetail }>(`/api/messages/${id}`, { signal }),
   updateMessage: (id: number, actions: MessageActions) => actions.labels !== undefined
     ? onlineMessageMutation<{ ok: true; message: MailDetail }>(`/api/messages/${id}`, "PATCH", actions)
     : queueableMutation<{ ok: true; message: MailDetail }>(
@@ -322,9 +333,9 @@ export const api = {
       "PATCH",
       actions,
       async () => {
-        const cached = await findCachedMessageById<MailDetail>(id);
+        const cached = await findCachedMessageById(id);
         if (!cached) throw new Error("操作已离线保存；此邮件尚无本地详情缓存");
-        return { ok: true, message: { ...cached, ...actions } as MailDetail };
+        return { ok: true, message: { ...cached, ...actions, labels: cached.labels } };
       }
     ),
   bulkMessages: (ids: number[], actions: MessageActions) => actions.labels !== undefined
@@ -342,7 +353,7 @@ export const api = {
   addAccount: (body: Record<string, unknown>) => request<{ account: MailAccount }>("/api/accounts", { method: "POST", body: JSON.stringify(body) }),
   setAccountEnabled: (id: number, enabled: boolean) => request<{ ok: true }>(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
   deleteAccount: (id: number) => request<void>(`/api/accounts/${id}`, { method: "DELETE" }),
-  labels: () => request<{ labels: MailLabel[] }>("/api/labels"),
+  labels: (signal?: AbortSignal) => request<{ labels: MailLabel[] }>("/api/labels", { signal }),
   createLabel: (name: string) => request<{ label: MailLabel }>("/api/labels", { method: "POST", body: JSON.stringify({ name }) }),
   deleteLabel: (id: number) => request<void>(`/api/labels/${id}`, { method: "DELETE" }),
   createDraft: (content: DraftContent) => request<{ draft: MailDetail }>("/api/drafts", { method: "POST", body: JSON.stringify(content) }),
@@ -353,14 +364,17 @@ export const api = {
   renameDevice: (id: string, name: string) => request<{ device: ClientDevice }>(`/api/devices/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   removeDevice: (id: string) => request<{ revoked: boolean }>(`/api/devices/${id}`, { method: "DELETE" }),
   flushOutbox,
-  syncPull: async () => {
-    const flushed = await flushOutbox();
+  syncPull: async (signal?: AbortSignal) => {
+    const flushed = await flushOutbox(signal);
     const scope = clientStorageScope();
     const after = getSyncRevision();
-    const response = await fetchLocal(`/api/sync/pull?after=${after}`);
+    const response = await fetchLocal(`/api/sync/pull?after=${after}`, { signal });
     if (!response.ok) throw await responseError(response);
     const result = await response.json() as { revision: number; events: SyncEvent[] };
-    if (scope === clientStorageScope()) setSyncRevision(result.revision);
+    if (scope === clientStorageScope()) {
+      setSyncRevision(result.revision);
+      if (result.events.length) await clearClientCache();
+    }
     return { ...result, ...flushed };
   }
 };

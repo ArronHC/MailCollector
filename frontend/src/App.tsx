@@ -1,6 +1,8 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { api, auth, unauthorizedEvent } from "./api";
+import { cancelApiRequests } from "./request-runtime";
+import { outboxFailureEvent, pendingClientOperations, retryFailedClientOperations } from "./client-outbox";
 import { AccountDialog, type AccountForm } from "./components/AccountDialog";
 import { ComposeDialog, type ComposeSeed } from "./components/ComposeDialog";
 import { MailListPanel, type MailContextAction } from "./components/MailListPanel";
@@ -40,32 +42,37 @@ function transitionState(update: () => void, kind: TransitionKind) {
 
 export default function App() {
   const [authState, setAuthState] = useState<"checking" | "authenticated" | "guest">("checking");
-  const [registered, setRegistered] = useState(false);
+  const [registered, setRegistered] = useState<boolean | null>(null);
+  const [authError, setAuthError] = useState("");
+  const [authAttempt, setAuthAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setAuthState("checking");
+    setAuthError("");
     void Promise.all([auth.status(), auth.restore()])
       .then(([status, restored]) => {
         if (cancelled) return;
         setRegistered(status.registered);
         setAuthState(restored ? "authenticated" : "guest");
       })
-      .catch(() => { if (!cancelled) setAuthState("guest"); });
+      .catch((error) => { if (!cancelled) { setRegistered(null); setAuthError(error instanceof Error ? error.message : "无法查询注册状态"); setAuthState("guest"); } });
     const unauthorized = () => {
-      void auth.status().then((status) => setRegistered(status.registered)).catch(() => undefined);
+      void auth.status().then((status) => { setRegistered(status.registered); setAuthError(""); }).catch(() => { setRegistered(null); setAuthError("无法查询注册状态，请重试或使用现有账户登录"); });
       transitionState(() => setAuthState("guest"), "auth");
     };
     window.addEventListener(unauthorizedEvent, unauthorized);
     return () => {
       cancelled = true;
+      cancelApiRequests();
       window.removeEventListener(unauthorizedEvent, unauthorized);
     };
-  }, []);
+  }, [authAttempt]);
 
   const content = authState === "checking"
     ? <main className="auth-loading"><strong>Mail Collector</strong><span>正在连接本地邮件空间...</span></main>
     : authState === "guest"
-      ? <LoginScreen registered={registered} onSignIn={async (email, password) => { await auth.signIn(email, password); transitionState(() => setAuthState("authenticated"), "auth"); }} onRegister={async (email, password, inviteCode) => { await auth.register(email, password, inviteCode); setRegistered(true); transitionState(() => setAuthState("authenticated"), "auth"); }} onKeySignIn={async (key) => { await auth.signInWithKey(key); transitionState(() => setAuthState("authenticated"), "auth"); }} />
+      ? <LoginScreen registered={registered} statusError={authError} onRetry={() => setAuthAttempt((value) => value + 1)} onSignIn={async (email, password) => { await auth.signIn(email, password); transitionState(() => setAuthState("authenticated"), "auth"); }} onRegister={async (email, password, inviteCode) => { await auth.register(email, password, inviteCode); setRegistered(true); transitionState(() => setAuthState("authenticated"), "auth"); }} onKeySignIn={async (key) => { await auth.signInWithKey(key); transitionState(() => setAuthState("authenticated"), "auth"); }} />
       : <MailboxApp onLogout={() => { void auth.signOut().finally(() => transitionState(() => setAuthState("guest"), "auth")); }} />;
   return <>{content}</>;
 }
@@ -118,6 +125,17 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   const foregroundMessageLoading = useRef(false);
   const readerLoadingRef = useRef(false);
   const remoteRefreshRunning = useRef(false);
+  const listController = useRef<AbortController | null>(null);
+  const detailController = useRef<AbortController | null>(null);
+  const refreshController = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    messageRequestSequence.current += 1;
+    detailRequestSequence.current += 1;
+    listController.current?.abort();
+    detailController.current?.abort();
+    refreshController.current?.abort();
+    cancelApiRequests();
+  }, []);
   activeMailIdRef.current = activeMailId;
 
   const activeAccount = accounts.find((account) => account.id === activeAccountId) ?? null;
@@ -128,15 +146,30 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   function toast(text: string, tone: ToastMessage["tone"] = "success", actionLabel?: string, onAction?: () => void) {
     const id = Date.now() + Math.floor(Math.random() * 1000);
     setToasts((current) => [...current.slice(-3), { id, text, tone, actionLabel, onAction }]);
-    window.setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 5000);
+    if (tone !== "error") window.setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 5000);
   }
 
-  const loadMetadata = useEffectEvent(async () => {
+  useEffect(() => {
+    const notify = () => {
+      const failed = pendingClientOperations().filter((item) => item.failure);
+      if (!failed.length) return;
+      toast(`${failed.length} 条离线操作未成功：${failed.map((item) => `${item.path} — ${item.failure?.reason}`).join("；")}`, "error", "核对后重试", () => {
+        retryFailedClientOperations();
+        void api.flushOutbox().then(() => refreshRemoteState()).catch((error) => toast(error instanceof Error ? error.message : "重试失败", "error"));
+      });
+    };
+    notify();
+    window.addEventListener(outboxFailureEvent, notify);
+    return () => window.removeEventListener(outboxFailureEvent, notify);
+  }, []);
+
+  const loadMetadata = useEffectEvent(async (signal?: AbortSignal) => {
     const [accountData, labelData, drafts] = await Promise.all([
-      api.accounts(),
-      api.labels(),
-      api.messages(new URLSearchParams({ view: "drafts", limit: "1", offset: "0" }))
+      api.accounts(signal),
+      api.labels(signal),
+      api.messages(new URLSearchParams({ view: "drafts", limit: "1", offset: "0" }), signal)
     ]);
+    if (signal?.aborted) return;
     setAccounts(accountData.accounts);
     setLabels(labelData.labels);
     setDraftCount(drafts.total);
@@ -145,6 +178,9 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   const loadMessages = useEffectEvent(async (silent = false) => {
     if (silent && foregroundMessageLoading.current) return;
     const requestId = ++messageRequestSequence.current;
+    listController.current?.abort();
+    const controller = new AbortController();
+    listController.current = controller;
     if (!silent) {
       foregroundMessageLoading.current = true;
       setLoading(true);
@@ -161,7 +197,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
         const ids = accounts.filter((account) => sourceNames[accountSource(account)] === activeTab).map((account) => account.id);
         if (ids.length) params.set("accountIds", ids.join(",")); else { setMails([]); setTotal(0); return; }
       }
-      const data = await api.messages(params);
+      const data = await api.messages(params, controller.signal);
       if (requestId !== messageRequestSequence.current) return;
       setMails(data.messages);
       setTotal(data.total);
@@ -173,7 +209,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
         closeReader();
       }
     } catch (error) {
-      if (requestId === messageRequestSequence.current) setListError(error instanceof Error ? error.message : "无法加载邮件");
+      if (!controller.signal.aborted && requestId === messageRequestSequence.current) setListError(error instanceof Error ? error.message : "无法加载邮件");
     } finally {
       if (!silent && requestId === messageRequestSequence.current) {
         foregroundMessageLoading.current = false;
@@ -194,14 +230,17 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   const refreshRemoteState = useEffectEvent(async () => {
     if (remoteRefreshRunning.current) return;
     remoteRefreshRunning.current = true;
+    refreshController.current?.abort();
+    const controller = new AbortController();
+    refreshController.current = controller;
     const detailId = activeMailIdRef.current;
     const detailRequestId = detailRequestSequence.current;
     const refreshDetail = detailId && !readerLoadingRef.current;
     try {
       await Promise.all([
-        loadMetadata(),
+        loadMetadata(controller.signal),
         loadMessages(true),
-        refreshDetail ? api.message(detailId).then(({ message }) => {
+        refreshDetail ? api.message(detailId, controller.signal).then(({ message }) => {
           if (detailRequestId === detailRequestSequence.current && activeMailIdRef.current === detailId) setMailDetail(message);
         }) : Promise.resolve()
       ]);
@@ -225,17 +264,25 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     return () => window.clearTimeout(timer);
   }, [search]);
 
-  useEffect(() => { void loadMessages(); }, [activeAccountId, activeLabelId, activeTab, view, starredFilter, offset, query, accounts.length]);
+  useEffect(() => {
+    void loadMessages();
+    return () => { listController.current?.abort(); refreshController.current?.abort(); };
+  }, [activeAccountId, activeLabelId, activeTab, view, starredFilter, offset, query, accounts.length]);
 
   async function openMailById(id: number) {
     const requestId = ++detailRequestSequence.current;
+    detailController.current?.abort();
+    refreshController.current?.abort();
+    const controller = new AbortController();
+    detailController.current = controller;
+    setMailDetail(null);
     activeMailIdRef.current = id;
     setActiveMailId(id);
     readerLoadingRef.current = true;
     setReaderLoading(true);
     setReaderError("");
     try {
-      const { message } = await api.message(id);
+      const { message } = await api.message(id, controller.signal);
       if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
       setMailDetail(message);
       if (message.bodyStatus !== "fetched" && message.kind === "received") pollMessageBody(id, requestId);
@@ -247,7 +294,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
         await loadMetadata();
       }
     } catch (error) {
-      if (requestId === detailRequestSequence.current && activeMailIdRef.current === id) setReaderError(error instanceof Error ? error.message : "无法读取邮件");
+      if (!controller.signal.aborted && requestId === detailRequestSequence.current && activeMailIdRef.current === id) setReaderError(error instanceof Error ? error.message : "无法读取邮件");
     } finally {
       if (requestId === detailRequestSequence.current && activeMailIdRef.current === id) {
         readerLoadingRef.current = false;
@@ -261,7 +308,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
     try {
-      const { message } = await api.message(id);
+      const { message } = await api.message(id, detailController.current?.signal);
       if (requestId !== detailRequestSequence.current || activeMailIdRef.current !== id) return;
       setMailDetail(message);
       if (message.bodyStatus === "fetched" || message.bodyStatus === "failed") return;
@@ -302,7 +349,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
       setMails((current) => current.map((mail) => mail.id === id ? { ...mail, ...result.message } : mail));
       await Promise.all([loadMessages(), loadMetadata()]);
       const undo = previousActions(before, actions);
-      toast(message, "success", "撤销", () => { void api.updateMessage(id, undo).then(() => Promise.all([loadMessages(), loadMetadata()])); });
+      toast(message, "success", "撤销", () => { void api.updateMessage(id, undo).then(() => Promise.all([loadMessages(), loadMetadata()])).catch((error) => toast(error instanceof Error ? `撤销失败：${error.message}` : "撤销失败", "error")); });
     } catch (error) { toast(error instanceof Error ? error.message : "操作失败", "error"); }
   }
 
@@ -318,17 +365,28 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     if (!ids.length) return;
     const snapshots = mails.filter((mail) => ids.includes(mail.id)).map((mail) => ({ id: mail.id, actions: previousActions(mail, actions) }));
     try {
-      await api.bulkMessages(ids, actions);
-      setCheckedIds(new Set());
+      const result = await api.bulkMessages(ids, actions);
+      setCheckedIds(new Set(result.missingIds));
       await Promise.all([loadMessages(), loadMetadata()]);
-      toast(`已更新 ${ids.length} 封邮件`, "success", "撤销", () => { void Promise.all(snapshots.map((item) => api.updateMessage(item.id, item.actions))).then(() => Promise.all([loadMessages(), loadMetadata()])); });
+      toast(`已更新 ${result.updated} 封邮件${result.missingIds.length ? `；失败 ID：${result.missingIds.join(", ")}` : ""}`, result.missingIds.length ? "error" : "success", "撤销成功项", () => {
+        const successful = snapshots.filter((item) => !result.missingIds.includes(item.id));
+        void Promise.allSettled(successful.map((item) => api.updateMessage(item.id, item.actions))).then(async (results) => {
+          const failed = successful.filter((_, index) => results[index]?.status === "rejected").map((item) => item.id);
+          toast(`撤销成功 ${results.length - failed.length} 封${failed.length ? `；撤销失败 ID：${failed.join(", ")}` : ""}`, failed.length ? "error" : "success");
+          await Promise.all([loadMessages(), loadMetadata()]);
+        }).catch((error) => toast(error instanceof Error ? error.message : "撤销后刷新失败", "error"));
+      });
     } catch (error) { toast(error instanceof Error ? error.message : "批量操作失败", "error"); }
   }
 
   async function permanentDeleteSelected() {
     const ids = Array.from(checkedIds);
     if (!ids.length || !window.confirm(`永久删除选中的 ${ids.length} 封本地邮件？`)) return;
-    try { await Promise.all(ids.map((id) => api.deleteMessage(id))); setCheckedIds(new Set()); await Promise.all([loadMessages(), loadMetadata()]); toast(`已永久删除 ${ids.length} 封邮件`); } catch (error) { toast(error instanceof Error ? error.message : "删除失败", "error"); }
+    const results = await Promise.allSettled(ids.map((id) => api.deleteMessage(id)));
+    const failed = ids.filter((_, index) => results[index]?.status === "rejected");
+    setCheckedIds(new Set(failed));
+    toast(`已永久删除 ${ids.length - failed.length} 封邮件${failed.length ? `；失败 ID：${failed.join(", ")}，可重新勾选后重试` : ""}`, failed.length ? "error" : "success");
+    try { await Promise.all([loadMessages(), loadMetadata()]); } catch (error) { toast(error instanceof Error ? error.message : "删除后刷新失败", "error"); }
   }
 
   async function syncMailbox() {
@@ -367,6 +425,8 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   }
   function toggleReaderExpanded() { transitionState(() => setReaderExpanded((value) => !value), "reader"); }
   function closeReader() {
+    detailController.current?.abort();
+    refreshController.current?.abort();
     detailRequestSequence.current += 1;
     activeMailIdRef.current = null;
     readerLoadingRef.current = false;
@@ -415,9 +475,19 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
 
   async function addAccount(form: AccountForm) {
     setDialogBusy(true); setDialogError("");
-    try { const { account } = await api.addAccount({ ...form, mailbox: "INBOX" }); await api.syncAccount(account.id); await Promise.all([loadMetadata(), loadMessages()]); setDialogOpen(false); toast("邮箱已添加并完成首次同步"); }
+    let account: MailAccount;
+    try { ({ account } = await api.addAccount({ ...form, mailbox: "INBOX" })); }
     catch (error) { setDialogError(error instanceof Error ? error.message : "添加邮箱失败"); throw error; }
     finally { setDialogBusy(false); }
+    setAccounts((current) => [...current.filter((item) => item.id !== account.id), account]);
+    setDialogOpen(false);
+    toast("邮箱已创建，正在进行首次同步");
+    // Resolve creation immediately so the form resets independently of sync.
+    const syncCreated = async () => {
+      try { await api.syncAccount(account.id); await Promise.all([loadMetadata(), loadMessages()]); toast("新邮箱首次同步完成"); }
+      catch (error) { toast(`邮箱已创建，后续同步/刷新失败：${error instanceof Error ? error.message : "未知错误"}`, "error", "重试同步", () => { void syncCreated(); }); }
+    };
+    void syncCreated();
   }
 
   async function manageAccount(action: "sync" | "toggle" | "delete", account: MailAccount) {
