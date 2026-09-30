@@ -60,6 +60,7 @@ export function MailTabs({ active, accounts, onChange }: { active: string; accou
 export function MailRow({ mail, selected, checked, showSource, onCheck, onSelect, onStar, onContextMenu }: { mail: MailItem; selected: boolean; checked: boolean; showSource: boolean; onCheck: () => void; onSelect: () => void; onStar: () => void; onContextMenu: (event: React.MouseEvent<HTMLElement>) => void }) {
   const sender = mail.kind === "sent" || mail.kind === "draft" ? `收件人：${mail.toText || "未填写"}` : mail.fromName || mail.fromAddress || "未知发件人";
   const openWithKeyboard = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.target instanceof Element && event.target.closest("button, input")) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       onSelect();

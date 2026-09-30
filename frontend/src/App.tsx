@@ -15,9 +15,9 @@ import { Modal, ToastStack, type ToastMessage } from "./components/Ui";
 import type { DraftContent, MailAccount, MailDetail, MailItem, MailLabel, MailProvider, MessageActions, MessageView } from "./data/mailData";
 import { accountSource, formatLastSync, sourceNames } from "./data/mailData";
 import { useAppSettings } from "./settings";
+import { useRemoteRefresh } from "./hooks/useRemoteRefresh";
 
 const PAGE_SIZE = 15;
-const REMOTE_REFRESH_MS = 15_000;
 type TransitionKind = "auth" | "reader";
 let transitionSequence = 0;
 
@@ -249,15 +249,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
     }
   });
 
-  useEffect(() => {
-    const refresh = () => { void refreshRemoteState().catch(() => undefined); };
-    const timer = window.setInterval(refresh, REMOTE_REFRESH_MS);
-    window.addEventListener("focus", refresh);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refresh);
-    };
-  }, []);
+  useRemoteRefresh(refreshRemoteState);
 
   useEffect(() => {
     const timer = window.setTimeout(() => { setOffset(0); setQuery(search.trim()); }, 250);
@@ -539,7 +531,7 @@ function MailboxApp({ onLogout }: { onLogout: () => void }) {
   return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <SyncProgressBar active={activeSync} />
     <TopBar search={search} onSearch={setSearch} accountCount={accounts.length} syncing={activeSync} classifying={classifying} error={syncError} lastSyncLabel={lastSyncLabel} backendLabel={backendLabel} onSync={() => void syncMailbox()} onClassify={() => void classifyMailbox()} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onHelp={() => setHelpOpen(true)} onSettings={() => setSettingsOpen(true)} onManageAccounts={() => setDialogOpen(true)} onLogout={onLogout} />
-    <div className="content-grid"><Sidebar accounts={accounts} labels={labels} activeAccountId={activeAccountId} activeNavigation={activeNavigation} activeLabelId={activeLabelId} unreadCount={unreadCount} draftCount={draftCount} onAccountSelect={(id) => { setActiveAccountId(id); setActiveNavigation(""); setActiveLabelId(null); setView("inbox"); setStarredFilter(false); setActiveTab("全部"); setOffset(0); }} onViewChange={(label, nextView, starred) => { setActiveAccountId(null); setActiveNavigation(label); setActiveLabelId(null); setView(nextView); setStarredFilter(Boolean(starred)); setActiveTab("全部"); setOffset(0); }} onLabelSelect={(label) => { setActiveAccountId(null); setActiveNavigation(label.name); setActiveLabelId(label.id); setView("all"); setStarredFilter(false); setOffset(0); }} onCompose={() => openCompose()} onAddAccount={() => setDialogOpen(true)} onManageAccount={() => setDialogOpen(true)} onCreateLabel={() => setLabelOpen(true)} />
+    <div className="content-grid"><Sidebar accounts={accounts} labels={labels} activeAccountId={activeAccountId} activeNavigation={activeNavigation} activeLabelId={activeLabelId} unreadCount={unreadCount} draftCount={draftCount} onAccountSelect={(id) => { setActiveAccountId(id); setActiveNavigation(""); setActiveLabelId(null); setView("inbox"); setStarredFilter(false); setActiveTab("全部"); setOffset(0); }} onViewChange={(label, nextView, starred) => { setActiveAccountId(null); setActiveNavigation(label); setActiveLabelId(null); setView(nextView); setStarredFilter(Boolean(starred)); setActiveTab("全部"); setOffset(0); }} onLabelSelect={(label) => { setActiveAccountId(null); setActiveNavigation(label.name); setActiveLabelId(label.id); setView("all"); setStarredFilter(false); setActiveTab("全部"); setOffset(0); }} onCompose={() => openCompose()} onAddAccount={() => setDialogOpen(true)} onManageAccount={() => setDialogOpen(true)} onCreateLabel={() => setLabelOpen(true)} />
       <MailListPanel mails={mails} accounts={accounts} labels={labels} activeAccount={activeAccount} title={activeNavigation || "收件箱"} activeTab={activeTab} activeMailId={activeMailId} checkedIds={checkedIds} total={total} offset={offset} loading={loading} syncing={syncing} error={listError} trashView={view === "trash"} onTabChange={(tab) => { setActiveTab(tab); setOffset(0); }} onSelect={(mail) => void selectMail(mail)} onStar={(id) => void updateOne(id, { isStarred: !mails.find((mail) => mail.id === id)?.isStarred }, "星标状态已更新")} onCheck={(id) => setCheckedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onCheckAll={() => setCheckedIds((current) => mails.length && mails.every((mail) => current.has(mail.id)) ? new Set() : new Set(mails.map((mail) => mail.id)))} onSelectWhere={selectWhere} onRefresh={() => void syncMailbox()} onBulk={(actions) => void bulkAction(actions)} onPermanentDelete={() => void permanentDeleteSelected()} onPrevious={() => setOffset(Math.max(0, offset - PAGE_SIZE))} onNext={() => setOffset(offset + PAGE_SIZE)} onContextAction={handleContextAction} />
       <MailReaderPanel mail={mailDetail} loading={readerLoading} error={readerError} labels={labels} expanded={readerExpanded} onToggleExpanded={toggleReaderExpanded} onAction={(actions) => { if (mailDetail) void updateOne(mailDetail.id, actions); }} onDelete={() => void deleteCurrent()} onStar={() => { if (mailDetail) void updateOne(mailDetail.id, { isStarred: !mailDetail.isStarred }, "星标状态已更新"); }} onReply={reply} onBack={closeReader} />
     </div>
