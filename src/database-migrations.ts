@@ -12,7 +12,11 @@ export function migrateDatabase(databasePath: string): void {
     db.pragma("foreign_keys = OFF");
     db.transaction(() => {
       const hasHistory = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
-      if (hasHistory && db.prepare("SELECT 1 FROM schema_migrations WHERE version = 3").get()) return;
+      const adoption = hasHistory ? db.prepare("SELECT name FROM schema_migrations WHERE version = 3").get() as { name: string } | undefined : undefined;
+      if (adoption) {
+        if (adoption.name !== "legacy_schema_adoption") throw new Error("Schema version 3 already belongs to another migration");
+        return;
+      }
       new LegacyDatabaseMigration(db).run();
       if ((db.pragma("foreign_key_check") as unknown[]).length) {
         throw new Error("Legacy database upgrade left invalid foreign keys");
