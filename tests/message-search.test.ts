@@ -17,10 +17,14 @@ function message(uid: number, subject: string): ParsedMessage {
 
 test("FTS follows insert, upsert, deferred body fetch, draft edit and account deletion", t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mail-search-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "search.db");
   const app = new MailDatabase(file);
-  t.after(() => app.close());
+  let inspection: Database.Database | undefined;
+  t.after(() => {
+    inspection?.close();
+    app.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
   const account = app.createAccount({ name: "Search", email: "user@example.test", host: "imap.example.test", port: 993,
     secure: true, username: "user", encryptedPassword: "ciphertext", mailbox: "INBOX", enabled: true });
   const count = (query: string, view: "inbox" | "all" = "inbox") => app.listMessages({ query, view, limit: 100, offset: 0 }).total;
@@ -45,15 +49,13 @@ test("FTS follows insert, upsert, deferred body fetch, draft edit and account de
   assert.equal(count("Draftword", "all"), 0);
   assert.equal(count("Editedword", "all"), 1);
   app.deleteAccount(account.id);
-  const raw = new Database(file);
-  t.after(() => raw.close());
+  const raw = inspection = new Database(file);
   assert.equal(raw.prepare("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'Editedword'").all().length, 0);
   raw.exec("INSERT INTO messages_fts(messages_fts,rank) VALUES('integrity-check',1)");
 });
 
 test("30,000 existing messages retain substring search results and use the trigram index", t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mail-search-volume-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "search.db");
   const raw = new Database(file);
   raw.exec(fs.readFileSync(new URL("./fixtures/v0.5.1-schema.sql", import.meta.url), "utf8"));
@@ -72,10 +74,14 @@ test("30,000 existing messages retain substring search results and use the trigr
   raw.close();
   const started = performance.now();
   const app = new MailDatabase(file);
-  t.after(() => app.close());
+  let inspection: Database.Database | undefined;
+  t.after(() => {
+    inspection?.close();
+    app.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
   t.diagnostic(`Upgrade and FTS backfill: ${(performance.now() - started).toFixed(1)} ms for 30,000 messages`);
-  const check = new Database(file);
-  t.after(() => check.close());
+  const check = inspection = new Database(file);
   const where = columns.map(c => `${c} LIKE @q`).join(" OR ");
   const old = check.prepare(`SELECT id FROM messages WHERE ${where} ORDER BY received_at DESC,id DESC`);
   for (const query of ["invoice", "tach", "工作", "工作报", "报", "CAFÉ", "café", "CAFé", "foo_bar", "100%", "mail@example", "OR", '"quoted"', "%", "_", "absent-value"]) {
