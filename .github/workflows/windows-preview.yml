@@ -26,7 +26,7 @@ jobs:
       npm_config_msvs_version: "2022"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
